@@ -1,0 +1,94 @@
+{
+  "name": "claude-code-matrix",
+  "version": "0.5.0",
+  "description": "Self-hosted Matrix bridge for Claude Code \u2014 privacy-first voice and text chat from your phone",
+  "author": {
+    "name": "Nick Fujita",
+    "url": "https://github.com/nickfujita"
+  },
+  "repository": "https://github.com/nickfujita/matrix-bridge-plugin",
+  "license": "MIT",
+  "keywords": [
+    "matrix",
+    "bridge",
+    "voice",
+    "mobile",
+    "self-hosted",
+    "privacy",
+    "tmux"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks session_start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks user_prompt_submit",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks pre_tool_use",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks stop",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks notification",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks session_end",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

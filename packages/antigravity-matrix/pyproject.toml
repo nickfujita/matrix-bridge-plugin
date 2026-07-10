@@ -1,0 +1,17 @@
+[project]
+name = "antigravity-matrix"
+version = "0.1.0"
+description = "Matrix bridge for Google Antigravity CLI — privacy-first voice and text chat from your phone"
+requires-python = ">=3.11"
+dependencies = [
+    "matrix-bridge-common",
+]
+
+[tool.uv.sources]
+matrix-bridge-common = { workspace = true }
+
+[project.scripts]
+antigravity-matrix = "antigravity_matrix.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/antigravity_matrix"]

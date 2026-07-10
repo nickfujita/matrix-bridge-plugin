@@ -1,0 +1,22 @@
+[project]
+name = "codex-matrix"
+version = "0.3.0"
+description = "Matrix bridge for Codex CLI — privacy-first voice and text chat from your phone"
+requires-python = ">=3.11"
+dependencies = [
+    "matrix-bridge-common",
+    "watchdog>=4.0",
+]
+
+[tool.uv.sources]
+matrix-bridge-common = { workspace = true }
+
+[project.scripts]
+codex-matrix = "codex_matrix.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_matrix"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

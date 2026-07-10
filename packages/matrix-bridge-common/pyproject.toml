@@ -1,0 +1,22 @@
+[project]
+name = "matrix-bridge-common"
+version = "0.3.0"
+description = "Shared Matrix bridge utilities for AI CLI tools"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "aiofiles>=24.1",
+    "libtmux>=0.37",
+    "filelock>=3.13",
+    "markdown>=3.5",
+    "pillow>=10.0",
+    "pykakasi>=2.3.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/matrix_bridge"]
+artifacts = ["src/matrix_bridge/assets/*.png", "src/matrix_bridge/assets/*.ttf"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

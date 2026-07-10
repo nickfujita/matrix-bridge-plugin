@@ -1,0 +1,77 @@
+{
+  "description": "Claude Code Matrix bridge hooks — forwards session events to Matrix",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks session_start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks user_prompt_submit",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks pre_tool_use",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks notification",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks session_end",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

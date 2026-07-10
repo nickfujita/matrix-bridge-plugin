@@ -1,0 +1,31 @@
+[project]
+name = "matrix-bridge"
+version = "0.3.0"
+description = "Self-hosted Matrix bridge for AI CLI tools (Claude Code, Codex)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+matrix-bridge-common = { workspace = true }
+claude-code-matrix = { workspace = true }
+codex-matrix = { workspace = true }
+antigravity-matrix = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "matrix-bridge-common",
+    "claude-code-matrix",
+    "codex-matrix",
+    "antigravity-matrix",
+    "pytest>=8.3,<9",
+]
+
+[tool.pytest.ini_options]
+# libtmux ships a pytest11 plugin that is incompatible with pytest >=9
+# (it applies a mark to a fixture, now a hard error) and crashes collection.
+# The bridge tests don't use it; disable it so `pytest tests/` runs cleanly.
+addopts = "-p no:libtmux"

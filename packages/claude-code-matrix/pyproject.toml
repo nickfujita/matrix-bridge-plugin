@@ -1,0 +1,21 @@
+[project]
+name = "claude-code-matrix"
+version = "0.3.0"
+description = "Matrix bridge for Claude Code — privacy-first voice and text chat from your phone"
+requires-python = ">=3.11"
+dependencies = [
+    "matrix-bridge-common",
+]
+
+[tool.uv.sources]
+matrix-bridge-common = { workspace = true }
+
+[project.scripts]
+ccmatrix = "claude_code_matrix.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_code_matrix"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
