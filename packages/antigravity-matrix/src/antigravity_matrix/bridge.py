@@ -7,7 +7,7 @@ from pathlib import Path
 
 from matrix_bridge.avatars import get_avatar_mxc
 from matrix_bridge.config import MatrixConfig
-from matrix_bridge.matrix import MatrixClient
+from matrix_bridge.matrix import MatrixClient, RoomUnavailable
 from matrix_bridge.room_name import (
     STATUS_ACTIVE,
     STATUS_ENDED,
@@ -116,20 +116,41 @@ class AntigravityBridge:
                     break
 
         sent = 0
+        healed = False
         for i, msg in enumerate(messages):
             role = msg["role"]
-            text = msg["text"]
             is_final = i == last_assistant_idx
 
             if role == "user":
                 continue
-            elif role == "tool":
-                await self.bot_client.room_send(entry.room_id, text[:500], catchup=True)
+            if role == "tool":
+                text, catchup, tts = msg["text"][:500], True, False
             else:
+                text = msg["text"][:4000]
+                catchup = not is_final
+                tts = is_final and self.config.server_side_voice
+
+            # If the mapped room is unreachable (deleted, or created by a previous
+            # bot account), recreate it once and resend rather than dropping the
+            # message silently.
+            try:
                 await self.bot_client.room_send(
-                    entry.room_id, text[:4000],
-                    catchup=not is_final,
-                    tts=is_final and self.config.server_side_voice,
+                    entry.room_id, text, catchup=catchup, tts=tts,
+                    raise_on_unavailable=True,
+                )
+            except RoomUnavailable as exc:
+                if healed:
+                    logger.error(f"Room still unavailable after healing: {exc}")
+                    return sent
+                logger.warning(f"{exc} — recreating room for session {session_id}")
+                self.session_map.set_room_id(session_id, None)
+                await self.create_room(session_id, entry.cwd)
+                entry = self.session_map.get(session_id)
+                if not entry or not entry.room_id:
+                    return sent
+                healed = True
+                await self.bot_client.room_send(
+                    entry.room_id, text, catchup=catchup, tts=tts,
                 )
             sent += 1
 

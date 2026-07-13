@@ -7,7 +7,7 @@ from filelock import FileLock
 
 from matrix_bridge.avatars import get_avatar_mxc
 from matrix_bridge.config import MatrixConfig
-from matrix_bridge.matrix import MatrixClient
+from matrix_bridge.matrix import MatrixClient, RoomUnavailable
 from matrix_bridge.room_name import (
     STATUS_ACTIVE,
     STATUS_ENDED,
@@ -148,6 +148,12 @@ class MatrixBridge:
 
             # Send each Claude message via the bot client. User messages are
             # not echoed — the human's own client already shows them.
+            #
+            # If the mapped room turns out to be unreachable (deleted, or created
+            # by a previous bot account), recreate it once and resend into the new
+            # room. Never advance synced_message_count past messages that were not
+            # actually delivered — doing so drops them permanently.
+            healed = False
             for i, msg in enumerate(new_messages):
                 is_final = (i == last_assistant_idx)
                 if msg["role"] == "user":
@@ -155,11 +161,29 @@ class MatrixBridge:
                 text = msg["text"][:4000] if len(msg["text"]) > 4000 else msg["text"]
                 # Final assistant message: m.text (notifies), others: m.notice (silent).
                 # Tag the final message cc.tts so the server-side voicehub speaks it.
-                await self.bot_client.room_send(
-                    entry.room_id, text,
-                    catchup=not is_final,
-                    tts=is_final and self.config.server_side_voice,
-                )
+                try:
+                    await self.bot_client.room_send(
+                        entry.room_id, text,
+                        catchup=not is_final,
+                        tts=is_final and self.config.server_side_voice,
+                        raise_on_unavailable=True,
+                    )
+                except RoomUnavailable as exc:
+                    if healed:
+                        logger.error(f"Room still unavailable after healing: {exc}")
+                        return 0
+                    logger.warning(f"{exc} — recreating room for session {session_id}")
+                    self.session_map.set_room_id(session_id, None)
+                    await self.create_room(session_id, entry.cwd)
+                    entry = self.session_map.get(session_id)
+                    if not entry or not entry.room_id:
+                        return 0
+                    healed = True
+                    await self.bot_client.room_send(
+                        entry.room_id, text,
+                        catchup=not is_final,
+                        tts=is_final and self.config.server_side_voice,
+                    )
 
             # Update count inside the lock so the next caller sees it
             total = already_synced + len(new_messages)
