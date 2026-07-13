@@ -90,7 +90,8 @@ class SessionMap:
                 data[session_id]["ended_at"] = time.time()
                 self._save(data)
 
-    def set_room_id(self, session_id: str, room_id: str) -> None:
+    def set_room_id(self, session_id: str, room_id: str | None) -> None:
+        """Set (or clear, with None) the room mapped to a session."""
         with self.lock:
             data = self._load()
             if session_id in data:

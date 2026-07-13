@@ -12,6 +12,19 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+
+class RoomUnavailable(Exception):
+    """A room the session is mapped to is gone, or this bot is not a member.
+
+    Raised by send paths so callers can recreate the room instead of dropping
+    messages. Happens when the homeserver loses a room, or when the bot account
+    changes (a room created by a previous account is unreachable by the new one).
+    """
+
+    def __init__(self, room_id: str, detail: str = "") -> None:
+        super().__init__(f"room {room_id} unavailable: {detail}")
+        self.room_id = room_id
+
 # Global transaction counter for Matrix event dedup
 _txn_counter = int(time.time() * 1000)
 
@@ -152,11 +165,18 @@ class MatrixClient:
 
     async def room_send(
         self, room_id: str, body: str, catchup: bool = False, tts: bool = False,
+        raise_on_unavailable: bool = False,
     ) -> str | None:
         """Send a text message. Returns event_id or None.
 
         If catchup=True, adds cc.catchup field so the daemon ignores it.
         If tts=True, adds cc.tts so the server-side voicehub synthesizes it.
+
+        If raise_on_unavailable=True, a definitive "this room is not usable by
+        this account" response (403/404) raises RoomUnavailable so the caller can
+        recreate the room. Transient failures still return None. Callers that
+        merely decorate a room (tool one-liners, typing) leave this False and keep
+        the old best-effort behavior.
         """
         import markdown as md
 
@@ -184,7 +204,16 @@ class MatrixClient:
             data = await resp.json()
             if resp.status == 200:
                 return data.get("event_id")
-            logger.error(f"room_send failed: {data}")
+            logger.error(f"room_send failed ({resp.status}): {data}")
+            if raise_on_unavailable and (
+                resp.status in (403, 404)
+                or data.get("errcode") in ("M_FORBIDDEN", "M_NOT_FOUND", "M_UNKNOWN_ROOM")
+            ):
+                # The room is gone, or this account was never a member of it
+                # (e.g. it was created by a previous bot account). Signal the
+                # caller so it can recreate the room instead of silently
+                # dropping messages forever.
+                raise RoomUnavailable(room_id, str(data))
             return None
 
     async def room_set_name(self, room_id: str, name: str) -> bool:

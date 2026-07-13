@@ -1,6 +1,6 @@
 {
   "name": "claude-code-matrix",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Self-hosted Matrix bridge for Claude Code \u2014 privacy-first voice and text chat from your phone",
   "author": {
     "name": "Nick Fujita",

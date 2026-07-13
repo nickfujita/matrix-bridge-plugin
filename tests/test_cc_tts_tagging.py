@@ -29,7 +29,9 @@ class _RoomSendRecorder:
     def __init__(self):
         self.sends: list[dict] = []
 
-    async def room_send(self, room_id, body, catchup=False, tts=False):
+    async def room_send(
+        self, room_id, body, catchup=False, tts=False, raise_on_unavailable=False,
+    ):
         self.sends.append({"body": body, "catchup": catchup, "tts": tts})
         return "$e"
 
