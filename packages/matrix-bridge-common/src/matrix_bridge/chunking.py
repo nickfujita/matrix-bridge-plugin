@@ -17,10 +17,20 @@ from __future__ import annotations
 
 import re
 
-# Conservative per-chunk budget. The rendered HTML roughly doubles the plain body
-# (worse for tables/code), and the event carries both, so this keeps a typical
-# event around 24 KB and a pathological one comfortably under the 65536 ceiling.
-DEFAULT_MAX_CHARS = 12000
+# Per-chunk budget, measured in UTF-8 BYTES — not characters. The homeserver caps
+# an event at 65536 bytes of canonical (UTF-8) JSON, so a character budget is both
+# too tight for ASCII and dangerously loose for multibyte text: 8000 Japanese
+# characters are 24000 bytes, and 24000 Japanese characters (73 KB) are rejected.
+#
+# Measured against a live homeserver: a 30000-byte body (event ≈ 60 KB with its
+# HTML twin) is accepted; 48000 bytes is rejected. 24000 leaves comfortable room
+# for the rendered `formatted_body` that rides along, and `room_send` drops that
+# HTML rather than the message if pathological markdown still blows the event up.
+#
+# The practical effect: a typical long reply (even 20k characters of prose) is a
+# single event with a single spoken audio file — chunking only kicks in for the
+# genuinely enormous.
+DEFAULT_MAX_BYTES = 24000
 
 _FENCE_RE = re.compile(r"^\s*```", re.MULTILINE)
 # Sentence end: ., !, ? optionally followed by a closing quote/bracket, then
@@ -44,8 +54,23 @@ def _open_fence_lang(text: str) -> str | None:
     return text[last_open + 3 : line_end].strip()
 
 
+def _chars_within_bytes(text: str, max_bytes: int) -> int:
+    """Largest number of leading characters of `text` that fit in `max_bytes` UTF-8."""
+    if len(text.encode()) <= max_bytes:
+        return len(text)
+    # Bisect: character count is a monotonic proxy for byte count.
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(text[:mid].encode()) <= max_bytes:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def _split_point(text: str, limit: int) -> int:
-    """Best index to cut `text` at, no greater than `limit`.
+    """Best index to cut `text` at, no greater than `limit` characters.
 
     Prefers a paragraph break, then a line break, then a sentence end, then a word
     break; falls back to a hard cut only when the text has no break at all.
@@ -70,15 +95,15 @@ def _split_point(text: str, limit: int) -> int:
     return limit  # no natural boundary — hard cut
 
 
-def split_message(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
-    """Split `text` into chunks of at most `max_chars`, at natural boundaries.
+def split_message(text: str, max_bytes: int = DEFAULT_MAX_BYTES) -> list[str]:
+    """Split `text` into chunks of at most `max_bytes` (UTF-8), at natural boundaries.
 
-    Returns [text] unchanged when it already fits, so the common case is a single
-    event exactly as before.
+    Returns [text] unchanged when it already fits, so the common case — including a
+    long reply — remains a single event with a single spoken audio file.
     """
     if not text:
         return []
-    if len(text) <= max_chars:
+    if len(text.encode()) <= max_bytes:
         return [text]
 
     chunks: list[str] = []
@@ -87,13 +112,15 @@ def split_message(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
 
     while rest:
         prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-        budget = max_chars - len(prefix)
+        budget = max_bytes - len(prefix.encode())
 
-        if len(prefix) + len(rest) <= max_chars:
+        if len((prefix + rest).encode()) <= max_bytes:
             chunks.append(prefix + rest)
             break
 
-        cut = _split_point(rest, budget)
+        # Work in characters within the byte budget, so multibyte text is safe.
+        limit = _chars_within_bytes(rest, budget)
+        cut = _split_point(rest, limit)
         piece = prefix + rest[:cut].rstrip()
         rest = rest[cut:].lstrip("\n")
 

@@ -8,7 +8,7 @@ truncation was text-only.
 
 import unittest
 
-from matrix_bridge.chunking import DEFAULT_MAX_CHARS, split_message
+from matrix_bridge.chunking import DEFAULT_MAX_BYTES, split_message
 
 
 class SplitMessageTests(unittest.TestCase):
@@ -28,10 +28,19 @@ class SplitMessageTests(unittest.TestCase):
     def test_every_chunk_fits_the_budget(self):
         text = "word " * 20000
         for chunk in split_message(text):
-            self.assertLessEqual(len(chunk), DEFAULT_MAX_CHARS)
+            self.assertLessEqual(len(chunk.encode()), DEFAULT_MAX_BYTES)
+
+    def test_multibyte_budget_is_measured_in_bytes(self):
+        """Japanese is 3 bytes/char: a char-based budget would blow the event limit."""
+        text = "これはテストです。" * 4000          # 36k chars = 108 KB UTF-8
+        chunks = split_message(text)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk.encode()), DEFAULT_MAX_BYTES)
+        self.assertEqual("".join(chunks).replace("\n", ""), text)
 
     def test_splits_on_paragraph_boundary(self):
-        a = "A" * (DEFAULT_MAX_CHARS - 10)   # leaves no room for the next paragraph
+        a = "A" * (DEFAULT_MAX_BYTES - 10)   # leaves no room for the next paragraph
         text = f"{a}\n\nSecond paragraph."
         chunks = split_message(text)
         self.assertEqual(len(chunks), 2)
@@ -40,7 +49,7 @@ class SplitMessageTests(unittest.TestCase):
 
     def test_falls_back_to_sentence_boundary(self):
         # one long paragraph, no newlines: must break after a sentence, not mid-word
-        sentences = "This is a sentence. " * 1200
+        sentences = "This is a sentence. " * 2500
         chunks = split_message(sentences)
         self.assertGreater(len(chunks), 1)
         for chunk in chunks[:-1]:
@@ -70,16 +79,17 @@ class SplitMessageTests(unittest.TestCase):
         self.assertTrue(chunks[1].startswith("```python"))
 
     def test_hard_cut_when_there_is_no_boundary_at_all(self):
-        text = "x" * (DEFAULT_MAX_CHARS * 2 + 5)
+        text = "x" * (DEFAULT_MAX_BYTES * 2 + 5)
         chunks = split_message(text)
         self.assertEqual(sum(len(c) for c in chunks), len(text))
         for chunk in chunks:
-            self.assertLessEqual(len(chunk), DEFAULT_MAX_CHARS)
+            self.assertLessEqual(len(chunk.encode()), DEFAULT_MAX_BYTES)
 
-    def test_a_long_reply_still_fits_a_single_event(self):
-        """The old 4000-char cap was 3x smaller than needed; verify the new budget
-        keeps a realistic long reply in ONE chunk (no gratuitous splitting)."""
-        realistic = "This is a fairly long assistant reply. " * 250  # ~9.5k chars
+    def test_a_long_reply_stays_a_single_event(self):
+        """A realistic long reply must NOT be split — one event, one audio file.
+        The 13.3k-char reply that exposed this bug in production is the benchmark."""
+        realistic = "This is a fairly long assistant reply. " * 350  # ~13.3k chars
+        self.assertGreater(len(realistic), 13000)
         self.assertEqual(len(split_message(realistic)), 1)
 
 
