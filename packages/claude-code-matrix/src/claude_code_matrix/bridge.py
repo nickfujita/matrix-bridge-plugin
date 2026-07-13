@@ -6,6 +6,7 @@ from pathlib import Path
 from filelock import FileLock
 
 from matrix_bridge.avatars import get_avatar_mxc
+from matrix_bridge.chunking import split_message
 from matrix_bridge.config import MatrixConfig
 from matrix_bridge.matrix import MatrixClient, RoomUnavailable
 from matrix_bridge.room_name import (
@@ -158,32 +159,37 @@ class MatrixBridge:
                 is_final = (i == last_assistant_idx)
                 if msg["role"] == "user":
                     continue
-                text = msg["text"][:4000] if len(msg["text"]) > 4000 else msg["text"]
-                # Final assistant message: m.text (notifies), others: m.notice (silent).
-                # Tag the final message cc.tts so the server-side voicehub speaks it.
-                try:
-                    await self.bot_client.room_send(
-                        entry.room_id, text,
-                        catchup=not is_final,
-                        tts=is_final and self.config.server_side_voice,
-                        raise_on_unavailable=True,
-                    )
-                except RoomUnavailable as exc:
-                    if healed:
-                        logger.error(f"Room still unavailable after healing: {exc}")
-                        return 0
-                    logger.warning(f"{exc} — recreating room for session {session_id}")
-                    self.session_map.set_room_id(session_id, None)
-                    await self.create_room(session_id, entry.cwd)
-                    entry = self.session_map.get(session_id)
-                    if not entry or not entry.room_id:
-                        return 0
-                    healed = True
-                    await self.bot_client.room_send(
-                        entry.room_id, text,
-                        catchup=not is_final,
-                        tts=is_final and self.config.server_side_voice,
-                    )
+
+                # Long messages are split at natural boundaries rather than
+                # truncated: every chunk is tagged for TTS so the whole reply is
+                # both readable and spoken. Only the last chunk is m.text, so a
+                # split reply still produces exactly one push notification.
+                speak = is_final and self.config.server_side_voice
+                chunks = split_message(msg["text"])
+                for j, chunk in enumerate(chunks):
+                    is_last = (j == len(chunks) - 1)
+                    quiet = not (is_final and is_last)
+                    try:
+                        await self.bot_client.room_send(
+                            entry.room_id, chunk,
+                            catchup=quiet,
+                            tts=speak,
+                            raise_on_unavailable=True,
+                        )
+                    except RoomUnavailable as exc:
+                        if healed:
+                            logger.error(f"Room still unavailable after healing: {exc}")
+                            return 0
+                        logger.warning(f"{exc} — recreating room for session {session_id}")
+                        self.session_map.set_room_id(session_id, None)
+                        await self.create_room(session_id, entry.cwd)
+                        entry = self.session_map.get(session_id)
+                        if not entry or not entry.room_id:
+                            return 0
+                        healed = True
+                        await self.bot_client.room_send(
+                            entry.room_id, chunk, catchup=quiet, tts=speak,
+                        )
 
             # Update count inside the lock so the next caller sees it
             total = already_synced + len(new_messages)

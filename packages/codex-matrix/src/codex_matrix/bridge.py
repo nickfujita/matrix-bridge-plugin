@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from matrix_bridge.avatars import get_avatar_mxc
+from matrix_bridge.chunking import split_message
 from matrix_bridge.config import MatrixConfig
 from matrix_bridge.matrix import MatrixClient, RoomUnavailable
 from matrix_bridge.room_name import (
@@ -110,34 +111,40 @@ class CodexBridge:
             if msg["role"] == "user":
                 continue
             if msg["role"] == "tool":
-                text, catchup, tts = msg["text"][:500], True, False
+                # Tool lines are deliberate one-liners; truncating them is fine.
+                chunks, speak = [msg["text"][:500]], False
             else:
-                text = msg["text"][:4000]
-                catchup = not is_final
-                tts = is_final and self.config.server_side_voice
+                # Long messages are split at natural boundaries rather than
+                # truncated, and every chunk is tagged for TTS, so the whole reply
+                # is readable and spoken. Only the last chunk notifies.
+                chunks = split_message(msg["text"])
+                speak = is_final and self.config.server_side_voice
 
-            # If the mapped room is unreachable (deleted, or created by a previous
-            # bot account), recreate it once and resend rather than dropping the
-            # message silently.
-            try:
-                await self.bot_client.room_send(
-                    entry.room_id, text, catchup=catchup, tts=tts,
-                    raise_on_unavailable=True,
-                )
-            except RoomUnavailable as exc:
-                if healed:
-                    logger.error(f"Room still unavailable after healing: {exc}")
-                    return sent
-                logger.warning(f"{exc} — recreating room for session {session_id}")
-                self.session_map.set_room_id(session_id, None)
-                await self.create_room(session_id, entry.cwd)
-                entry = self.session_map.get(session_id)
-                if not entry or not entry.room_id:
-                    return sent
-                healed = True
-                await self.bot_client.room_send(
-                    entry.room_id, text, catchup=catchup, tts=tts,
-                )
+            for j, chunk in enumerate(chunks):
+                is_last = (j == len(chunks) - 1)
+                quiet = (msg["role"] == "tool") or not (is_final and is_last)
+                # If the mapped room is unreachable (deleted, or created by a
+                # previous bot account), recreate it once and resend rather than
+                # dropping the message silently.
+                try:
+                    await self.bot_client.room_send(
+                        entry.room_id, chunk, catchup=quiet, tts=speak,
+                        raise_on_unavailable=True,
+                    )
+                except RoomUnavailable as exc:
+                    if healed:
+                        logger.error(f"Room still unavailable after healing: {exc}")
+                        return sent
+                    logger.warning(f"{exc} — recreating room for session {session_id}")
+                    self.session_map.set_room_id(session_id, None)
+                    await self.create_room(session_id, entry.cwd)
+                    entry = self.session_map.get(session_id)
+                    if not entry or not entry.room_id:
+                        return sent
+                    healed = True
+                    await self.bot_client.room_send(
+                        entry.room_id, chunk, catchup=quiet, tts=speak,
+                    )
             sent += 1
 
         return sent

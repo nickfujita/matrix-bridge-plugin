@@ -12,6 +12,10 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+# Matrix rejects any event whose PDU exceeds 65536 bytes; leave headroom for the
+# fields the server adds (sender, origin_server_ts, event_id, signatures...).
+_MAX_EVENT_BYTES = 60000
+
 
 class RoomUnavailable(Exception):
     """A room the session is mapped to is gone, or this bot is not a member.
@@ -178,6 +182,8 @@ class MatrixClient:
         merely decorate a room (tool one-liners, typing) leave this False and keep
         the old best-effort behavior.
         """
+        import json
+
         import markdown as md
 
         txn_id = _next_txn_id()
@@ -192,10 +198,23 @@ class MatrixClient:
             content["format"] = "org.matrix.custom.html"
             content["formatted_body"] = html
 
-        if catchup:
+        # cc.catchup and cc.tts are mutually exclusive: the server-side voicehub
+        # ignores anything carrying cc.catchup, so a message we want spoken must
+        # not have it. Quiet-but-spoken chunks (m.notice + cc.tts) are still safe
+        # against loops — the daemon skips events whose sender is the bot itself.
+        if catchup and not tts:
             content["cc.catchup"] = True
         if tts:
             content["cc.tts"] = True
+
+        # Last-resort guard: Matrix rejects events over 65536 bytes (M_TOO_LARGE).
+        # Callers chunk before getting here, but pathological markdown (huge tables)
+        # can still blow the HTML up — drop the rich rendering rather than the
+        # message, so the text (and therefore the spoken audio) always arrives.
+        if len(json.dumps(content).encode()) > _MAX_EVENT_BYTES:
+            content.pop("format", None)
+            content.pop("formatted_body", None)
+            logger.warning("event too large with HTML; sending plain body only")
 
         async with self.session.put(
             self._url(f"/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}"),
