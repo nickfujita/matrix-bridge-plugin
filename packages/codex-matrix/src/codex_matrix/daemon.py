@@ -57,6 +57,11 @@ class CodexDaemon:
         # Dedupe turn-complete handling when both transcript and notify fire.
         self._last_completed_turn: dict[str, str] = {}
         self._inflight_turns: set[tuple[str, str]] = set()
+        # Room-title updates are cosmetic. Keep strong references to their
+        # background tasks so they cannot delay watcher attachment or delivery.
+        self._decoration_tasks: set[asyncio.Task[None]] = set()
+        self._active_title_tasks: dict[str, asyncio.Task[None]] = {}
+        self._title_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
         """Start the daemon — runs both inbound and outbound loops."""
@@ -76,6 +81,12 @@ class CodexDaemon:
                         self._session_cleanup_loop(),
                     )
                 finally:
+                    tasks = list(self._decoration_tasks)
+                    for task in tasks:
+                        task.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    self._active_title_tasks.clear()
                     if self.watcher:
                         self.watcher.stop()
 
@@ -88,11 +99,84 @@ class CodexDaemon:
                 continue
             if session_file and entry.session_id not in self.watched_sessions:
                 # Create Matrix room if session was registered but never got one
-                if not entry.room_id:
+                reused_room = bool(entry.room_id)
+                if not reused_room:
                     await self.bridge.create_room(entry.session_id, entry.cwd)
                 self.watcher.watch_file(session_file)
                 self.watched_sessions.add(entry.session_id)
                 logger.info(f"Resumed watching session {entry.session_id[:8]}")
+                if reused_room:
+                    self._schedule_active_title_restore(entry.session_id)
+
+    async def _restore_active_title(self, session_id: str) -> None:
+        """Best-effort active-title decoration outside the delivery path."""
+        async with self._title_lock(session_id):
+            entry = self.session_map.get(session_id)
+            if (
+                not entry
+                or not entry.active
+                or not entry.room_id
+                or session_id not in self.watched_sessions
+            ):
+                return
+            try:
+                title_restored = await self.bridge.mark_session_active(session_id)
+            except Exception:
+                logger.warning(
+                    "Failed to restore active room title for %s; session delivery is unaffected",
+                    session_id[:8],
+                    exc_info=True,
+                )
+            else:
+                if not title_restored:
+                    logger.warning(
+                        "Failed to restore active room title for %s; session delivery is unaffected",
+                        session_id[:8],
+                    )
+
+    def _title_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the lock serializing every title transition for a session."""
+        lock = self._title_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._title_locks[session_id] = lock
+        return lock
+
+    def _schedule_active_title_restore(self, session_id: str) -> asyncio.Task[None]:
+        """Schedule at most one active-title restoration for a session."""
+        existing = self._active_title_tasks.get(session_id)
+        if existing and not existing.done():
+            return existing
+
+        task = asyncio.create_task(self._restore_active_title(session_id))
+        self._decoration_tasks.add(task)
+        self._active_title_tasks[session_id] = task
+
+        def discard(completed: asyncio.Task[None]) -> None:
+            self._decoration_tasks.discard(completed)
+            if self._active_title_tasks.get(session_id) is completed:
+                self._active_title_tasks.pop(session_id, None)
+
+        task.add_done_callback(discard)
+        return task
+
+    async def _refresh_branch_title(self, session_id: str) -> None:
+        """Refresh branch decoration after delivery, warning on any failure."""
+        async with self._title_lock(session_id):
+            try:
+                refreshed = await self.bridge.refresh_branch_if_changed(session_id)
+            except Exception:
+                logger.warning(
+                    "Failed to refresh branch room title for %s; message delivery is unaffected",
+                    session_id[:8],
+                    exc_info=True,
+                )
+            else:
+                if refreshed is False:
+                    logger.warning(
+                        "Failed to refresh branch room title for %s; message delivery is unaffected",
+                        session_id[:8],
+                    )
 
     async def _signal_watch_loop(self) -> None:
         """Watch for notify hook signals to discover new sessions and flush turns.
@@ -123,14 +207,23 @@ class CodexDaemon:
         if not thread_id:
             return
 
+        restore_existing_room = False
         if thread_id not in self.watched_sessions:
+            entry = self.session_map.get(thread_id)
+            restore_existing_room = bool(entry and entry.room_id)
             await self._setup_session(thread_id, data.get("cwd", ""), data.get("tmux_pane", ""))
 
-        await self._on_turn_complete(
-            thread_id,
-            data.get("turn_id", ""),
-            data.get("last_assistant_message", ""),
-        )
+        try:
+            await self._on_turn_complete(
+                thread_id,
+                data.get("turn_id", ""),
+                data.get("last_assistant_message", ""),
+            )
+        finally:
+            if restore_existing_room and thread_id in self.watched_sessions:
+                entry = self.session_map.get(thread_id)
+                if entry and entry.active and entry.room_id:
+                    self._schedule_active_title_restore(thread_id)
 
     async def _on_turn_complete(
         self,
@@ -233,8 +326,6 @@ class CodexDaemon:
         entry = self.session_map.get(thread_id)
         if entry and not entry.room_id:
             await self.bridge.create_room(thread_id, entry.cwd or cwd)
-        elif entry and entry.room_id:
-            await self.bridge.mark_session_active(thread_id)
 
         # Start watching the session file
         self.watcher.watch_file(session_file)
@@ -275,11 +366,10 @@ class CodexDaemon:
             entry = self.session_map.get(thread_id)
 
         # Create Matrix room if needed
+        refresh_existing_room = bool(entry and entry.room_id)
         if entry and not entry.room_id:
             await self.bridge.create_room(thread_id, entry.cwd)
             entry = self.session_map.get(thread_id)
-        elif entry and entry.room_id:
-            await self.bridge.refresh_branch_if_changed(thread_id)
 
         if not entry or not entry.room_id or not entry.active:
             return
@@ -325,19 +415,39 @@ class CodexDaemon:
             # notify hook is delayed or misses a callback.
             await self._on_turn_complete(thread_id, turn_id)
 
+        # Branch names are cosmetic. Refresh only after all messages and
+        # completion controls from this file batch have been handled so a slow
+        # or failed Matrix state event cannot lose or reorder assistant output.
+        if refresh_existing_room:
+            await self._refresh_branch_title(thread_id)
+
     async def _retire_session(self, session_id: str, reason: str) -> None:
         """Mark a session inactive and stop all outbound Matrix/TTS work."""
         entry = self.session_map.get(session_id)
         self._pending_assistant.pop(session_id, None)
         self.watched_sessions.discard(session_id)
 
-        if entry and entry.room_id:
-            try:
-                await self.bridge.mark_session_ended(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to mark Codex session {session_id[:8]} ended: {e}")
+        # An earlier resume may still have an asynchronous active-title request
+        # in flight. Join it before emitting the ended title. Cancelling the
+        # local await is insufficient because Matrix may still apply a request
+        # that already reached the homeserver after the ended event.
+        active_title_task = self._active_title_tasks.pop(session_id, None)
+        if active_title_task and active_title_task is not asyncio.current_task():
+            await asyncio.gather(active_title_task, return_exceptions=True)
 
-        self.session_map.deregister(session_id)
+        # Branch refreshes are awaited inline rather than tracked as background
+        # decoration tasks. Serialize behind any in-flight refresh and keep the
+        # session active until it finishes; the ended rename then runs last.
+        async with self._title_lock(session_id):
+            if entry and entry.room_id:
+                try:
+                    await self.bridge.mark_session_ended(session_id)
+                except Exception as e:
+                    logger.warning(f"Failed to mark Codex session {session_id[:8]} ended: {e}")
+
+            # Mark inactive before releasing the title lock. Any queued refresh
+            # will then observe an inactive session and perform no rename.
+            self.session_map.deregister(session_id)
         logger.info(f"Retired Codex session {session_id[:8]}: {reason}")
 
     async def _session_cleanup_loop(self) -> None:

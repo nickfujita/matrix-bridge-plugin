@@ -11,7 +11,8 @@ resumed, without duplicating normally buffered turns.
 the local daemon signal. Handle each signal as setup-then-completion, and use the
 hook response only to complete or recover the watcher buffer for that turn.
 Reattachment performs an explicit active-room title transition rather than
-depending on branch-change detection.
+depending on branch-change detection. That transition is best-effort decoration
+and cannot gate watcher attachment or completion delivery.
 
 **Tech Stack:** Python 3.12, asyncio, unittest/pytest, Codex notify hooks, Matrix
 bridge daemon.
@@ -23,8 +24,9 @@ bridge daemon.
   failure before implementation.
 - Reuse the existing session and Matrix room; do not change authentication or
   room creation semantics.
-- A reused room must restore its active title even when its saved branch equals
-  the current branch.
+- A reused room must attempt to restore its active title even when its saved
+  branch equals the current branch. Matrix rejection or failure must warn and
+  continue without advancing saved title metadata.
 - The payload final is a fallback/completion guard, not a replacement for normal
   buffered delivery.
 - Keep existing turn-ID deduplication and send the recovered final with
@@ -55,7 +57,8 @@ bridge daemon.
 - Produces: daemon signal field `last_assistant_message: str` and a testable
   setup-then-completion handler.
 - Produces: an explicit bridge operation that applies `STATUS_ACTIVE` to an
-  existing session room and synchronizes its saved branch.
+  existing session room, reports Matrix success, and synchronizes its saved
+  branch only after success.
 - Extends: `_on_turn_complete(thread_id, turn_id, fallback_assistant)` while
   preserving existing callers through a default empty fallback.
 
@@ -68,6 +71,8 @@ bridge daemon.
   completion, the existing room is retained, its active title is restored even
   when the branch is unchanged, the exact fallback is sent once with
   `notify_final=True`, and a duplicate callback for the same turn sends nothing.
+  Use a non-empty completed transcript and assert the watcher initializes at its
+  end-of-file offset, so the fallback—not transcript replay—causes delivery.
 
 - [ ] **Step 2: Write the failing notify serialization test**
 
@@ -104,9 +109,23 @@ bridge daemon.
 
   Add an explicit bridge lifecycle operation symmetric with
   `mark_session_ended`. It must build and apply `STATUS_ACTIVE` using the current
-  branch and update the saved branch. Call it when `_setup_session` reuses an
-  existing room; do not rely on `refresh_branch_if_changed`, whose unchanged
-  branch fast path cannot clear an ended marker.
+  branch, return whether Matrix accepted the rename, and update the saved branch
+  only after success. After `_setup_session` attaches a reused room and completion
+  delivery finishes, queue the active-title attempt without awaiting cosmetic
+  I/O. Cold-start discovery must queue the same attempt after watcher attachment.
+  Do not rely on `refresh_branch_if_changed`, whose unchanged-branch fast path
+  cannot clear an ended marker. The daemon must warn on a false result or
+  exception so cosmetic state never gates attachment or delivery. Keep at most
+  one active-title task per session; a failed attachment queues none, and
+  retirement must remove the session from the watched set and join any in-flight
+  active task before applying the ended title. Do not cancel a title request
+  already sent to Matrix, because cancelling the local await does not prove the
+  homeserver will not apply it later. Serialize active restoration, branch
+  refresh, and the ended transition with one per-session title lock. Retirement
+  waits behind any in-flight branch refresh, applies the ended title last, and
+  marks the session inactive before releasing the lock. Preserve cancellation
+  of all decoration tasks during daemon shutdown, where no competing ended
+  transition is emitted.
 
 - [ ] **Step 7: Complete or recover the buffered assistant response**
 
@@ -116,6 +135,15 @@ bridge daemon.
   fallback as the sole assistant message. Preserve hidden-automation recovery as
   the final fallback when neither buffered nor hook text exists, and preserve
   in-flight plus completed-turn deduplication.
+
+- [ ] **Step 7a: Keep branch decoration outside transcript delivery**
+
+  Buffer and deliver a file batch, including any task-complete control, before
+  awaiting branch-title refresh. Make branch refresh report Matrix rejection,
+  advance saved branch metadata only after acknowledgement, and warn without
+  aborting delivery on a false result or exception. Cover the notify/file
+  interleaving that previously could strand a completed assistant response in
+  the next turn's buffer.
 
 - [ ] **Step 8: Prove the focused tests pass**
 
