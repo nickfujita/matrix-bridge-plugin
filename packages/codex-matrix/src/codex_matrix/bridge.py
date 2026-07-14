@@ -63,21 +63,29 @@ class CodexBridge:
         logger.error(f"Failed to create room for Codex session {session_id}")
         return None
 
-    async def refresh_branch_if_changed(self, session_id: str) -> None:
-        """Update room name when the git branch has changed since last check."""
+    async def refresh_branch_if_changed(self, session_id: str) -> bool | None:
+        """Update the room name when its git branch has changed.
+
+        Returns True when the saved title is already current or Matrix accepts
+        the update, False when Matrix rejects it, and None when the session has
+        no active room to decorate. Saved metadata advances only on success.
+        """
         entry = self.session_map.get(session_id)
         if not entry or not entry.room_id or not entry.active:
-            return
+            return None
         current = detect_branch(entry.cwd)
         if current == entry.last_branch:
-            return
+            return True
         name = build_room_name(
             entry.cwd, status=STATUS_ACTIVE,
             repo_aliases=self.config.repo_aliases, branch=current,
         )
-        await self.bot_client.room_set_name(entry.room_id, name)
+        renamed = await self.bot_client.room_set_name(entry.room_id, name)
+        if not renamed:
+            return False
         self.session_map.set_last_branch(session_id, current)
         logger.info(f"Renamed Codex room for {session_id}: branch {entry.last_branch} → {current}")
+        return True
 
     async def send_messages(self, session_id: str, messages: list[dict], notify_final: bool = False) -> int:
         """Send a batch of messages to the Matrix room for a session.
@@ -158,6 +166,27 @@ class CodexBridge:
                 entry.room_id, self.config.user_id,
                 typing=typing, timeout=timeout,
             )
+
+    async def mark_session_active(self, session_id: str) -> bool:
+        """Update the room name to active status using the current branch.
+
+        Returns whether Matrix accepted the title update. Saved title metadata
+        advances only after that acknowledgement so a failed decoration can be
+        retried by a later lifecycle or branch refresh.
+        """
+        entry = self.session_map.get(session_id)
+        if not entry or not entry.room_id:
+            return False
+        current = detect_branch(entry.cwd)
+        name = build_room_name(
+            entry.cwd, status=STATUS_ACTIVE,
+            repo_aliases=self.config.repo_aliases, branch=current,
+        )
+        renamed = await self.bot_client.room_set_name(entry.room_id, name)
+        if not renamed:
+            return False
+        self.session_map.set_last_branch(session_id, current)
+        return True
 
     async def mark_session_ended(self, session_id: str) -> None:
         """Update room name to ended status."""
