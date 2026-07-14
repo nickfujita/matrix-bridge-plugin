@@ -111,19 +111,33 @@ class CodexDaemon:
                     import json
                     data = json.loads(signal_file.read_text())
                     signal_file.unlink(missing_ok=True)
-
-                    thread_id = data.get("thread_id", "")
-                    if thread_id and thread_id not in self.watched_sessions:
-                        await self._setup_session(thread_id, data.get("cwd", ""), data.get("tmux_pane", ""))
-                    elif thread_id:
-                        # Turn complete for an existing session — generate TTS
-                        await self._on_turn_complete(thread_id, data.get("turn_id", ""))
+                    await self._handle_notify_signal(data)
             except Exception as e:
                 logger.error(f"Signal watch error: {e}")
 
             await asyncio.sleep(2)
 
-    async def _on_turn_complete(self, thread_id: str, turn_id: str = "") -> None:
+    async def _handle_notify_signal(self, data: dict) -> None:
+        """Attach a notified session if needed, then process its completion."""
+        thread_id = data.get("thread_id", "")
+        if not thread_id:
+            return
+
+        if thread_id not in self.watched_sessions:
+            await self._setup_session(thread_id, data.get("cwd", ""), data.get("tmux_pane", ""))
+
+        await self._on_turn_complete(
+            thread_id,
+            data.get("turn_id", ""),
+            data.get("last_assistant_message", ""),
+        )
+
+    async def _on_turn_complete(
+        self,
+        thread_id: str,
+        turn_id: str = "",
+        fallback_assistant: str = "",
+    ) -> None:
         """Flush buffered assistant messages when a turn completes.
 
         Assistant messages are buffered during file watching (sent silently as
@@ -160,6 +174,10 @@ class CodexDaemon:
             # Flush buffered assistant messages — last one triggers notification
             pending = self._pending_assistant.pop(thread_id, [])
             final_only = bool(session_file and has_hidden_user_marker(session_file))
+            if fallback_assistant and (
+                not pending or pending[-1].get("text") != fallback_assistant
+            ):
+                pending.append({"role": "assistant", "text": fallback_assistant})
             logger.info(
                 "Handling turn-complete for %s (turn=%s, pending=%d)",
                 thread_id[:8],
@@ -216,7 +234,7 @@ class CodexDaemon:
         if entry and not entry.room_id:
             await self.bridge.create_room(thread_id, entry.cwd or cwd)
         elif entry and entry.room_id:
-            await self.bridge.refresh_branch_if_changed(thread_id)
+            await self.bridge.mark_session_active(thread_id)
 
         # Start watching the session file
         self.watcher.watch_file(session_file)

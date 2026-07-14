@@ -89,6 +89,7 @@ def handle_notify():
         "turn_id": payload.get("turn-id", ""),
         "cwd": cwd,
         "tmux_pane": tmux_pane,
+        "last_assistant_message": payload.get("last-assistant-message", ""),
     }))
 
     # Ensure daemon is running

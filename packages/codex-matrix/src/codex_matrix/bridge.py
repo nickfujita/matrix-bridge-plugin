@@ -159,6 +159,19 @@ class CodexBridge:
                 typing=typing, timeout=timeout,
             )
 
+    async def mark_session_active(self, session_id: str) -> None:
+        """Update room name to active status using the current branch."""
+        entry = self.session_map.get(session_id)
+        if not entry or not entry.room_id:
+            return
+        current = detect_branch(entry.cwd)
+        name = build_room_name(
+            entry.cwd, status=STATUS_ACTIVE,
+            repo_aliases=self.config.repo_aliases, branch=current,
+        )
+        await self.bot_client.room_set_name(entry.room_id, name)
+        self.session_map.set_last_branch(session_id, current)
+
     async def mark_session_ended(self, session_id: str) -> None:
         """Update room name to ended status."""
         entry = self.session_map.get(session_id)
