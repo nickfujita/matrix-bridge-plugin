@@ -54,7 +54,7 @@
           {
             "type": "command",
             "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks stop",
-            "timeout": 15
+            "timeout": 600
           }
         ]
       }

@@ -177,4 +177,4 @@ the Claude Code plugin cache for testing changes live.
 
 ## License
 
-MIT © Nick Fujita ([github.com/nickfujita](https://github.com/nickfujita))
+MIT © [nickfujita](https://github.com/nickfujita)
