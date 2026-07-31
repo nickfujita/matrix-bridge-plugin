@@ -15,6 +15,10 @@ from matrix_bridge.config import load_config, STATE_DIR
 CODEX_STATE_DIR = STATE_DIR  # ~/.ccmatrix
 ENABLED_FLAG = CODEX_STATE_DIR / "codex-enabled"
 
+# The generated wrapper records the passthrough notifier here so a later
+# `codex-matrix enable` can recover it without parsing shell.
+_PASSTHROUGH_MARKER = "# matrix-bridge:passthrough "
+
 
 def cmd_enable(args):
     """Enable the Codex Matrix bridge."""
@@ -183,7 +187,18 @@ def _existing_wrapper_passthrough_command() -> str | None:
     if not wrapper.exists():
         return None
 
-    for line in wrapper.read_text().splitlines():
+    text = wrapper.read_text()
+
+    # Wrappers written by this version record the passthrough verbatim, because
+    # the invocation line now goes through a shell variable and is no longer
+    # readable as a command.
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_PASSTHROUGH_MARKER):
+            return stripped[len(_PASSTHROUGH_MARKER):].strip() or None
+
+    # Older wrappers invoked the passthrough directly; recover it from the line.
+    for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or matrix_notify in stripped:
             continue
@@ -191,6 +206,32 @@ def _existing_wrapper_passthrough_command() -> str | None:
         if marker in stripped:
             return stripped.split(marker, 1)[0]
     return None
+
+
+def _passthrough_candidate_exprs(argv0: str) -> list[str]:
+    """Shell-quoted paths to try for the passthrough notifier, in order.
+
+    The wrapper records an absolute path, but installers relocate these
+    scripts — box-bootstrap now drops them in ~/.local/bin where they used to
+    land in /usr/local/bin. Baking in one path turns a relocated notifier into
+    a wrapper that can never fire again, so emit the alternatives too and let
+    the wrapper pick at run time.
+    """
+    name = Path(argv0).name
+    exprs: list[str] = []
+    seen: set[str] = set()
+
+    def add(expr: str, key: str) -> None:
+        if key not in seen:
+            seen.add(key)
+            exprs.append(expr)
+
+    add(shlex.quote(argv0), argv0)
+    add(shlex.quote(f"/usr/local/bin/{name}"), f"/usr/local/bin/{name}")
+    # $HOME has to expand when the wrapper runs, not when it is written, so it
+    # stays in double quotes while the basename is quoted normally.
+    add(f'"$HOME/.local/bin"/{shlex.quote(name)}', f"$HOME/.local/bin/{name}")
+    return exprs
 
 
 def _write_notify_scripts(passthrough_command: str | None) -> None:
@@ -218,9 +259,28 @@ def _write_notify_scripts(passthrough_command: str | None) -> None:
         "# completion notifier and the Matrix bridge notify handler.",
     ]
     if passthrough_command:
-        wrapper_lines.append(
-            f"{passthrough_command} \"$@\" >> {shlex.quote(str(state_dir / 'codex-notify-wrapper.log'))} 2>&1 || true"
-        )
+        argv = shlex.split(passthrough_command)
+        candidates = " ".join(_passthrough_candidate_exprs(argv[0]))
+        extra_args = f"{shlex.join(argv[1:])} " if len(argv) > 1 else ""
+        wrapper_lines += [
+            "",
+            f"{_PASSTHROUGH_MARKER}{passthrough_command}",
+            "# Resolve the passthrough notifier at run time: installers move it",
+            "# between /usr/local/bin and ~/.local/bin. Skip it silently when no",
+            "# copy is present, so a missing notifier never fails the notify hook.",
+            "matrix_passthrough=''",
+            f"for candidate in {candidates}; do",
+            '  if [[ -x "$candidate" ]]; then',
+            '    matrix_passthrough="$candidate"',
+            "    break",
+            "  fi",
+            "done",
+            'if [[ -n "$matrix_passthrough" ]]; then',
+            f'  "$matrix_passthrough" {extra_args}"$@" '
+            f">> {shlex.quote(str(state_dir / 'codex-notify-wrapper.log'))} 2>&1 || true",
+            "fi",
+            "",
+        ]
     wrapper_lines.append(
         f"{shlex.quote(str(matrix_notify))} \"$@\" >> {shlex.quote(str(state_dir / 'codex-notify-wrapper.log'))} 2>&1 || true"
     )
