@@ -107,6 +107,26 @@ injection), and `ffmpeg` if you use the optional voice path.
 Slash commands: `/matrix-setup`, `/matrix-status`, `/matrix-enable`,
 `/matrix-disable`.
 
+## Session sentinel
+
+Two rules only the bridge knows about, so the bridge teaches them. While a
+bridge is enabled, `hooks/session-sentinel.sh` injects roughly two lines of
+`SessionStart` context (~90 tokens, once per session) telling the agent to:
+
+- **switch to a spoken, TTS-safe reply style as soon as you sound mobile** —
+  dictation typos, "heading out", "going mobile", or a message that arrived
+  through the bridge — by invoking a `go-mobile` skill if one is installed, and
+- **never start a nested `claude`/`codex` session in the bridge-owned tmux
+  pane.** Only one live session may own a pane, so a nested one silently
+  retires the real session's mapping: outbound messages keep flowing while
+  inbound phone → terminal replies stop arriving. Use a separate tmux session
+  or a container instead.
+
+The hook is plain `bash` — no `uv`, no Python — and prints nothing at all when
+neither `~/.ccmatrix/enabled` nor `~/.ccmatrix/codex-enabled` is present, so a
+disabled install costs zero context. It lives in `hooks/hooks.json`, which both
+Claude Code and Codex read automatically.
+
 ## Configuration
 
 Config lives in `~/.ccmatrix/config.json` (written `0600`). Every key can also
