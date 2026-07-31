@@ -1,5 +1,5 @@
 {
-  "description": "Claude Code Matrix bridge hooks — forwards session events to Matrix",
+  "description": "Matrix bridge hooks — forwards session events to Matrix and injects the phone-bridge operating rules. Read automatically by both Claude Code and Codex, so the sentinel below is declared here (and only here) to fire exactly once per harness.",
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +9,16 @@
             "type": "command",
             "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks session_start",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-sentinel.sh",
+            "timeout": 5
           }
         ]
       }
