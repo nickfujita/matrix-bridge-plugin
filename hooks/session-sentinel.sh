@@ -12,6 +12,16 @@
 # milliseconds and must not fail the session if the workspace venv is broken.
 # Runs under both Claude Code and Codex — both read hooks/hooks.json and both
 # accept hookSpecificOutput.additionalContext on SessionStart.
+#
+# Keep the payload terse. Claude Code absorbs additionalContext silently, but
+# Codex *renders it to the user* as a "hook context:" block on the first turn of
+# every session: codex-rs/hooks/src/events/common.rs pushes the same string into
+# both the model's context and the user-visible entry list, and SessionStart
+# discards `suppressOutput` (`let _ = parsed.universal.suppress_output;` in
+# codex-rs/hooks/src/events/session_start.rs). There is no quiet channel, so the
+# only lever on that wall of text is length. `suppressOutput` is still declared
+# below: Claude Code honours it, and Codex silences the echo for free if it ever
+# stops ignoring the field.
 set -euo pipefail
 
 state_dir="${HOME}/.ccmatrix"
@@ -25,9 +35,10 @@ fi
 
 cat <<'SENTINEL'
 {
+  "suppressOutput": true,
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "Messages may arrive via the Matrix phone bridge. On any hint the user is mobile — dictation artifacts/typos, phrases like 'heading out' or 'going mobile', or bridge-originated messages — invoke the go-mobile skill immediately (if installed). Never launch a nested claude/codex/live-agent CLI session in the tmux pane owned by the bridge; use a separate tmux session or Docker."
+    "additionalContext": "Matrix phone bridge active. Use the go-mobile skill on any hint the user is mobile. Never start a nested claude/codex CLI in the bridge's tmux pane — it steals the pane's session mapping and breaks inbound routing."
   }
 }
 SENTINEL

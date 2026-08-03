@@ -55,6 +55,22 @@ class PluginManifestTests(unittest.TestCase):
         ]
         self.assertEqual(timeouts, [600])
 
+    def test_session_end_timeout_fits_the_codex_cap(self):
+        # Codex hard-clamps SessionEnd to SESSION_END_MAX_TIMEOUT_SEC = 3
+        # (codex-rs/hooks/src/events/session_end.rs — it runs during teardown and
+        # must fit inside app-server's 5s shutdown budget). The constant is not
+        # configurable, so anything above 3 buys nothing on Codex and makes it
+        # print "clamping SessionEnd hook timeout to 3s in <path>" on every
+        # single launch. Omitting `timeout` is worse: Codex would then fall back
+        # to SESSION_END_DEFAULT_TIMEOUT_SEC = 1.
+        data = json.loads((ROOT / "hooks/hooks.json").read_text())
+        timeouts = [
+            hook["timeout"]
+            for matcher in data["hooks"]["SessionEnd"]
+            for hook in matcher["hooks"]
+        ]
+        self.assertEqual(timeouts, [3])
+
     def test_plugin_and_marketplace_versions_match(self):
         plugin = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())
         marketplace = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text())
@@ -124,8 +140,22 @@ class SessionSentinelTests(unittest.TestCase):
             state.mkdir()
             (state / "enabled").touch()
             context = self._run(home)["hookSpecificOutput"]["additionalContext"]
-        # Injected into every single session — keep it to a couple of lines.
-        self.assertLessEqual(len(context), 600)
+        # Injected into every single session, and Codex *shows it to the user*
+        # as a "hook context:" block on the first turn (see session-sentinel.sh).
+        # Claude Code absorbs it silently, so length is the only lever we have on
+        # that echo — keep it to a couple of rendered lines.
+        self.assertLessEqual(len(context), 260)
+
+    def test_requests_output_suppression(self):
+        # Codex currently discards `suppressOutput` on SessionStart, but it is a
+        # documented field in its own session-start output schema and Claude Code
+        # honours it. Declaring it costs nothing and silences the Codex echo for
+        # free if that ever changes.
+        with tempfile.TemporaryDirectory() as home:
+            state = Path(home) / ".ccmatrix"
+            state.mkdir()
+            (state / "enabled").touch()
+            self.assertIs(self._run(home)["suppressOutput"], True)
 
 
 if __name__ == "__main__":

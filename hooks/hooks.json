@@ -1,5 +1,5 @@
 {
-  "description": "Matrix bridge hooks — forwards session events to Matrix and injects the phone-bridge operating rules. Read automatically by both Claude Code and Codex, so the sentinel below is declared here (and only here) to fire exactly once per harness.",
+  "description": "Matrix bridge hooks — forwards session events to Matrix and injects the phone-bridge operating rules. Read automatically by both Claude Code and Codex, so the sentinel below is declared here (and only here) to fire exactly once per harness. SessionEnd is capped at 3s because Codex hard-clamps that event (SESSION_END_MAX_TIMEOUT_SEC in codex-rs/hooks/src/events/session_end.rs) and warns on every launch when a manifest asks for more; the handler only deregisters the session and renames the room, which measures ~0.2s. Stop keeps 600s — Codex does not clamp non-SessionEnd events.",
   "hooks": {
     "SessionStart": [
       {
@@ -78,7 +78,7 @@
           {
             "type": "command",
             "command": "uv run --quiet --project ${CLAUDE_PLUGIN_ROOT} python -m claude_code_matrix.hooks session_end",
-            "timeout": 10
+            "timeout": 3
           }
         ]
       }

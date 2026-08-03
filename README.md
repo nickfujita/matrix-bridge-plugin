@@ -127,6 +127,12 @@ neither `~/.ccmatrix/enabled` nor `~/.ccmatrix/codex-enabled` is present, so a
 disabled install costs zero context. It lives in `hooks/hooks.json`, which both
 Claude Code and Codex read automatically.
 
+The payload is deliberately terse. Claude Code absorbs `additionalContext`
+silently, but Codex renders the same string back to the user as a
+`hook context:` block on the first turn of every session, and it ignores
+`suppressOutput` on `SessionStart`, so there is no quiet channel — length is the
+only lever. The rules stay identical on both harnesses; only the prose is cut.
+
 ## Configuration
 
 Config lives in `~/.ccmatrix/config.json` (written `0600`). Every key can also
