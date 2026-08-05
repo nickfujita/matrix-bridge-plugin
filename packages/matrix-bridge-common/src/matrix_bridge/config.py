@@ -11,6 +11,9 @@ CONFIG_DIR = Path.home() / ".ccmatrix"
 STATE_DIR = CONFIG_DIR  # Alias used by other modules
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+# Set by whatever spawns an agent CLI programmatically. See is_suppressed_session.
+SUPPRESS_SESSION_ENV = "CCMATRIX_SUPPRESS_SESSION"
+
 # Keys older configs may carry that this version no longer uses. They are
 # dropped on load and the file is re-saved without them (migration shim).
 #   admin_access_token — impersonated sends were removed (scoped bot token only)
@@ -43,6 +46,36 @@ def _env_bool(name: str, default: bool) -> bool:
     if val is None or not val.strip():
         return default
     return val.strip().lower() not in ("0", "false", "no", "off")
+
+
+def is_suppressed_session() -> bool:
+    """Return True when this process's session is machine-driven, not human-driven.
+
+    A session that another agent's flow spawned — the interactive `claude`
+    reviewer a Codex skill starts in tmux, a scripted persona run, any CLI
+    launched by a script rather than by a person — is addressed to *that agent*,
+    not to the human on the other end of the phone. Mirroring it produces a
+    second Matrix room for one unit of work, plus push notifications and TTS for
+    output nobody asked to hear. So the bridge stays out of the way entirely: no
+    room, no session-map entry, no notification, no `cc.tts` tag.
+
+    This is the Claude/Antigravity counterpart of
+    `codex_matrix.transcript.is_unmirrored_session`, which reads the same intent
+    out of Codex's own session metadata (`thread_source`, `parent_thread_id`).
+    Claude Code exposes no equivalent metadata field, so the signal has to come
+    from the spawner: it exports `CCMATRIX_SUPPRESS_SESSION=1` and every child
+    process of that CLI inherits it.
+
+    Deliberately scoped to the *process*, and therefore consulted only in the
+    per-session hook entry points — never inside the shared bridge/daemon code.
+    The daemon is one long-lived process serving every session on the machine;
+    if it ever inherited this variable, a global read would silently mute rooms
+    that belong to the human. Suppressed sessions never start it.
+
+    Truthiness follows the other boolean settings: unset/empty is False, and
+    ``0``/``false``/``no``/``off`` are all explicit opt-outs.
+    """
+    return _env_bool(SUPPRESS_SESSION_ENV, False)
 
 
 def _ensure_secure_mode(path: Path) -> None:

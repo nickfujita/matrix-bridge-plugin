@@ -1,12 +1,59 @@
 """Parse Claude Code JSONL transcripts into user/assistant message pairs."""
 
 import json
+import os
 from pathlib import Path
+
+
+def claude_projects_dir() -> Path:
+    """Return the directory Claude Code writes session transcripts into.
+
+    Honours CLAUDE_CONFIG_DIR, which relocates the whole ~/.claude tree.
+    """
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    root = Path(config_dir) if config_dir else Path.home() / ".claude"
+    return root / "projects"
+
+
+def is_claude_code_payload(payload: dict) -> bool:
+    """Return True when a hook payload was produced by Claude Code itself.
+
+    hooks/hooks.json is not read by Claude Code alone. Codex loads the same
+    file out of an installed plugin — that is deliberate for the shared
+    SessionStart sentinel, but it also means Codex fires *these* handlers, with
+    a payload whose `session_id` is a Codex thread id. Nothing downstream can
+    tell the difference: the handlers would register that Codex thread in the
+    Claude session map and open a second, Claude-avatar Matrix room for a
+    session the Codex bridge is already mirroring properly. One unit of work,
+    two rooms, two notifications, two spoken replies.
+
+    So the ownership test is positive rather than a guess about who else might
+    be calling: every Claude Code hook event carries a `transcript_path` under
+    the Claude transcript root (verified across SessionStart, UserPromptSubmit,
+    PreToolUse, Stop and SessionEnd). Codex's own `transcript_path` points at
+    its rollout file under CODEX_HOME, so it can never satisfy this. The
+    session-id fallback keeps a resumed session working if a future payload
+    ever drops the field.
+    """
+    raw = payload.get("transcript_path") or ""
+    if raw:
+        root = claude_projects_dir()
+        try:
+            if Path(raw).resolve().is_relative_to(root.resolve()):
+                return True
+        except (OSError, ValueError):
+            # Unresolvable path (broken symlink, permissions) — fall back to a
+            # literal comparison rather than claiming the session.
+            if str(raw).startswith(str(root)):
+                return True
+
+    session_id = payload.get("session_id") or ""
+    return bool(session_id and find_transcript(session_id))
 
 
 def find_transcript(session_id: str) -> Path | None:
     """Find the JSONL transcript file for a session ID."""
-    projects_dir = Path.home() / ".claude" / "projects"
+    projects_dir = claude_projects_dir()
     if not projects_dir.exists():
         return None
 

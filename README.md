@@ -133,6 +133,44 @@ silently, but Codex renders the same string back to the user as a
 `suppressOutput` on `SessionStart`, so there is no quiet channel — length is the
 only lever. The rules stay identical on both harnesses; only the prose is cut.
 
+## Which sessions get a room
+
+`hooks/hooks.json` being read by both harnesses is what the sentinel wants, but
+it applies to every hook in the file. Install this plugin under Codex as well
+and Codex will happily run the *Claude* handlers too — it records them in
+`~/.codex/config.toml` as
+`hooks.state."claude-code-matrix@claude-code-matrix:hooks/hooks.json:<event>:i:j"`
+— handing them a payload whose `session_id` is a Codex thread id. Left
+unchecked, every Codex session got a second, Claude-avatar room on top of the
+one the Codex bridge already made: two rooms, two notifications and two spoken
+replies for one unit of work.
+
+So each Claude handler first asks whether the session is its own. The test is
+positive rather than a guess about the caller: Claude Code puts a
+`transcript_path` under its projects directory in every hook payload, and
+Codex's points at a rollout file under `CODEX_HOME`. A payload that fails the
+test is ignored, and any entry an older version left in `sessions.json` for that
+id is retired so the daemon stops routing phone replies into it.
+
+The second question is whether the session is addressed to a human at all. A
+session that another agent's flow spawned — the interactive `claude` a Codex
+skill starts in tmux for a review, a scripted persona run — is a work product
+for that agent, and mirroring it just puts a room and a spoken reply in front of
+someone who never asked for it. Such a spawner exports
+`CCMATRIX_SUPPRESS_SESSION=1` before launching the CLI; every child process
+inherits it, and the bridge then creates no room, sends no notification, emits
+no `cc.tts` tag and injects no sentinel context for that session.
+
+```bash
+# in a script that launches an agent CLI for its own consumption
+CCMATRIX_SUPPRESS_SESSION=1 tmux new-session -d -s reviewer claude
+```
+
+Codex sessions have no equivalent switch: its bridge discovers sessions by
+watching `~/.codex/sessions/` from a long-lived daemon that never sees the
+spawning process's environment. Codex marks its *own* background subagents in
+session metadata instead — see `codex_matrix.transcript.is_unmirrored_session`.
+
 ## Configuration
 
 Config lives in `~/.ccmatrix/config.json` (written `0600`). Every key can also
@@ -155,6 +193,7 @@ Additional environment-only settings:
 |---------|---------|
 | `CCMATRIX_VM_LETTER` | Force this machine's identity letter (color + avatar). Required on hosts whose hostname isn't distinctive (many cloud instances); otherwise derived from the hostname's last alphabetic character. |
 | `CCMATRIX_ANTIGRAVITY_SKILL_DIRS` | (Antigravity only) `os.pathsep`-separated list of local skill roots to expose to Antigravity. Defaults to `~/.agents/skills`. |
+| `CCMATRIX_SUPPRESS_SESSION` | Set to `1` by whatever *spawns* an agent CLI programmatically. The spawned session gets no room, no notification, no TTS and no sentinel context — see [Which sessions get a room](#which-sessions-get-a-room). Unset/`0`/`false`/`no`/`off` all mean "normal human session". |
 
 See [docs/multi-machine-deployment.md](docs/multi-machine-deployment.md) for
 running the bridge across several machines (per-machine bot accounts, identity

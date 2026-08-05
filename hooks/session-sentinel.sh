@@ -33,6 +33,18 @@ if [[ ! -f "${state_dir}/enabled" && ! -f "${state_dir}/codex-enabled" ]]; then
   exit 0
 fi
 
+# A session another agent's flow spawned is never mirrored to the phone, so
+# these rules are context it can only be misled by: there is no human on the
+# other end to go mobile for. Same truthiness as the Python side
+# (matrix_bridge.config.is_suppressed_session).
+case "$(printf '%s' "${CCMATRIX_SUPPRESS_SESSION:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+  ''|0|false|no|off) ;;
+  *)
+    echo '{}'
+    exit 0
+    ;;
+esac
+
 cat <<'SENTINEL'
 {
   "suppressOutput": true,
