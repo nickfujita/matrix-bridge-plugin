@@ -14,6 +14,39 @@ PROBE = "notify-codex-matrix-probe.sh"
 
 
 class CodexCliNotifyInstallTests(unittest.TestCase):
+    def test_install_notify_hook_stays_top_level_when_config_ends_in_a_table(self):
+        """A bare key appended after `[agents]` belongs to that table, not the root.
+
+        Codex then fails with:
+            invalid length 1, expected struct AgentRoleToml with 3 elements in `agents`
+        """
+        import tomllib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            config_dir = home / ".codex"
+            config_dir.mkdir(parents=True)
+            config = config_dir / "config.toml"
+            config.write_text(
+                'model = "gpt-5.6-sol"\n'
+                "\n"
+                "[agents]\n"
+                "enabled = true\n"
+                'default_subagent_model = "gpt-5.6-terra"\n'
+            )
+
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                cli._install_notify_hook()
+
+            parsed = tomllib.loads(config.read_text())
+            self.assertIn("notify", parsed, "notify must be a top-level key")
+            self.assertEqual(
+                parsed["notify"],
+                [f"{home}/.ccmatrix/codex-notify-wrapper.sh"],
+            )
+            self.assertEqual(parsed["agents"]["enabled"], True)
+            self.assertNotIn("notify", parsed["agents"])
+
     def test_install_notify_hook_replaces_multi_command_array_with_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
