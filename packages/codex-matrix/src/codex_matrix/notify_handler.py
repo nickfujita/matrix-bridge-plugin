@@ -26,6 +26,7 @@ from pathlib import Path
 from matrix_bridge.session import SessionMap
 from .transcript import (
     find_session_file,
+    has_force_mirror_marker,
     is_unmirrored_session,
     is_unmirrored_session_meta,
 )
@@ -58,17 +59,25 @@ def handle_notify():
 
     session_map = SessionMap(STATE_DIR / "codex-sessions.json")
 
-    # Background subagent threads are internal work products for the parent
-    # agent.  Do not register them, signal the daemon, create Matrix rooms, or
-    # trigger TTS.  If a previous version already registered one, mark it
-    # inactive so inbound routing and TTS guards will ignore it.
+    # Background subagent threads and non-interactive `codex exec` runs are
+    # internal work products for the agent or script that started them.  Do not
+    # register them, signal the daemon, create Matrix rooms, or trigger TTS.  If
+    # a previous version already registered one, mark it inactive so inbound
+    # routing and TTS guards will ignore it.
     meta = {
         "parent_thread_id": payload.get("parent_thread_id") or payload.get("parent-thread-id"),
         "thread_source": payload.get("thread_source") or payload.get("thread-source"),
         "source": payload.get("source"),
+        "originator": payload.get("originator") or payload.get("thread-originator"),
     }
     session_file = find_session_file(thread_id)
-    if is_unmirrored_session_meta(meta) or (session_file and is_unmirrored_session(session_file)):
+    # The opt-in is checked first and separately: the metadata rules are
+    # deliberately redundant across payload and file, so a session that asked to
+    # be mirrored must clear both of them, not just the file-based one.
+    forced = bool(session_file and has_force_mirror_marker(session_file))
+    if not forced and (
+        is_unmirrored_session_meta(meta) or (session_file and is_unmirrored_session(session_file))
+    ):
         session_map.deregister(thread_id)
         logger.info(f"Ignoring unmirrored Codex session {thread_id[:8]} (cwd: {cwd})")
         return

@@ -8,6 +8,7 @@ and mirror the final assistant response to Matrix and TTS.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import subprocess
@@ -17,7 +18,7 @@ from typing import Any
 
 from filelock import FileLock, Timeout
 
-from matrix_bridge.config import load_config
+from matrix_bridge.config import is_suppressed_session, load_config
 from matrix_bridge.session import SessionMap
 
 from .bridge import AntigravityBridge
@@ -28,6 +29,32 @@ ENABLED_FLAG = STATE_DIR / "antigravity-enabled"
 
 def _is_enabled() -> bool:
     return ENABLED_FLAG.exists()
+
+
+def honours_session_suppression(handler):
+    """Make a hook handler a no-op for a machine-driven session.
+
+    Applied to every handler in HANDLERS, so the guarantee holds for whichever
+    hook fires first. See `matrix_bridge.config.is_suppressed_session` for why
+    a session another agent's flow spawned must not get a room, a notification
+    or TTS. Any entry a previous run left in the map is retired, so the daemon
+    stops routing phone messages into it.
+    """
+
+    @functools.wraps(handler)
+    async def wrapper(payload: dict[str, Any]) -> dict:
+        if is_suppressed_session():
+            session_id = _session_id(payload)
+            if session_id:
+                session_map = SessionMap(STATE_DIR / "antigravity-sessions.json")
+                entry = session_map.get(session_id)
+                if entry and entry.active:
+                    session_map.deregister(session_id)
+            return {}
+        return await handler(payload)
+
+    wrapper.honours_session_suppression = True
+    return wrapper
 
 
 def _read_payload() -> dict[str, Any]:
@@ -95,6 +122,7 @@ def _format_tool_call(payload: dict[str, Any]) -> str | None:
     return f"● {display}"
 
 
+@honours_session_suppression
 async def handle_pre_invocation(payload: dict[str, Any]) -> dict:
     """Register the session, create its room, and show typing."""
     session_id, cwd = _register_session(payload)
@@ -113,6 +141,7 @@ async def handle_pre_invocation(payload: dict[str, Any]) -> dict:
     return {}
 
 
+@honours_session_suppression
 async def handle_post_tool_use(payload: dict[str, Any]) -> dict:
     """Sync user/tool progress from the transcript after a tool completes."""
     session_id, cwd = _register_session(payload)
@@ -138,6 +167,7 @@ async def handle_post_tool_use(payload: dict[str, Any]) -> dict:
     return {}
 
 
+@honours_session_suppression
 async def handle_post_invocation(payload: dict[str, Any]) -> dict:
     """Keep room state warm between model invocations.
 
@@ -161,6 +191,7 @@ async def handle_post_invocation(payload: dict[str, Any]) -> dict:
     return {}
 
 
+@honours_session_suppression
 async def handle_stop(payload: dict[str, Any]) -> dict:
     """Turn-complete hook: sync final text to Matrix.
 
@@ -201,6 +232,7 @@ async def handle_stop(payload: dict[str, Any]) -> dict:
     return {}
 
 
+@honours_session_suppression
 async def handle_session_end(payload: dict[str, Any]) -> dict:
     session_id = _session_id(payload)
     if not session_id:

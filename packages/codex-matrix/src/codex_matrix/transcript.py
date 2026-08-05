@@ -20,20 +20,68 @@ HIDDEN_USER_MARKERS = (
     "PAPER_VOICE_DAILY_RUN_ID=",
 )
 
+# Opt back in to mirroring from inside a non-interactive run. See
+# has_force_mirror_marker for why this is a marker rather than an env var.
+FORCE_MIRROR_MARKERS = (
+    "CCMATRIX_FORCE_MIRROR",
+)
+
 
 def _is_hidden_user_text(text: str) -> bool:
     """Return True for automation prompts that should not be mirrored to Matrix."""
     return any(marker in text for marker in HIDDEN_USER_MARKERS)
 
 
-def is_unmirrored_session_meta(meta: dict | None) -> bool:
-    """Return True when a Codex session is internal agent work.
+def is_noninteractive_session_meta(meta: dict | None) -> bool:
+    """Return True when a Codex session is a `codex exec` run, not a person typing.
 
-    Multi-agent background threads are addressed to the parent agent, not the
-    human user.  They should not get Matrix rooms, push notifications, or TTS.
-    Current Codex session metadata marks these with ``thread_source=subagent``
-    plus a parent thread id; keep the checks intentionally redundant so older
-    and newer metadata shapes are both covered.
+    `codex exec` is the non-interactive entry point: a script starts it, it runs
+    one turn, it exits. Nobody is at a terminal, and the bridge's inbound path
+    types phone replies into a tmux pane — an exec process ignores keystrokes,
+    so its room can never be answered. Mirroring one is write-only noise: a
+    room, a push notification and a spoken reply for output addressed to the
+    script that launched it. A single automation round can open several.
+
+    The signal is metadata Codex itself writes into the rollout's ``session_meta``
+    line, which is what makes this usable at all: the daemon discovers sessions
+    with a filesystem watcher and never sees the spawning process's environment,
+    so an environment variable cannot reach this decision. Both fields are
+    checked because both have moved: across 514 rollouts on one machine,
+    ``source`` is ``"exec"`` for exec runs and ``"cli"`` for interactive ones,
+    while ``originator`` is ``codex_exec`` for exec runs and ``codex-tui`` or
+    (older builds) ``codex_cli_rs`` for interactive ones.
+
+    ``source`` is not always a string — for subagent threads it is a dict — so
+    it is type-checked before comparison rather than trusted.
+    """
+    if not meta:
+        return False
+
+    source = meta.get("source")
+    if isinstance(source, str) and source.strip().lower() == "exec":
+        return True
+
+    originator = meta.get("originator")
+    if isinstance(originator, str) and originator.strip().lower() in {"codex_exec", "codex-exec"}:
+        return True
+
+    return False
+
+
+def is_unmirrored_session_meta(meta: dict | None) -> bool:
+    """Return True when a Codex session should not reach the human's phone.
+
+    Two independent reasons, both of them "this output is addressed to a
+    machine, not to the person holding the phone":
+
+    * internal agent work — multi-agent background threads belong to the parent
+      agent. Current Codex metadata marks these with ``thread_source=subagent``
+      plus a parent thread id; the checks are intentionally redundant so older
+      and newer metadata shapes are both covered.
+    * a non-interactive `codex exec` run — see is_noninteractive_session_meta.
+
+    This is the metadata half of the decision. Callers holding the session file
+    should use is_unmirrored_session, which also honours the opt-in marker.
     """
     if not meta:
         return False
@@ -48,12 +96,57 @@ def is_unmirrored_session_meta(meta: dict | None) -> bool:
     if isinstance(source, dict) and "subagent" in source:
         return True
 
+    if is_noninteractive_session_meta(meta):
+        return True
+
+    return False
+
+
+def has_force_mirror_marker(session_path: Path) -> bool:
+    """Return True when a session explicitly asks to be mirrored anyway.
+
+    The escape hatch for the rules above: put ``CCMATRIX_FORCE_MIRROR``
+    anywhere in the prompt and the session gets a room, a notification and TTS
+    even though it is a scripted run.
+
+        codex exec "CCMATRIX_FORCE_MIRROR Summarise today's alerts"
+
+    It is a marker in the prompt rather than an environment variable on purpose,
+    and this is the mechanism's one real limit: the daemon learns about most
+    sessions from a filesystem watcher over ``~/.codex/sessions/``, in a
+    long-lived process that never sees the environment of whatever spawned the
+    CLI. The rollout is the only channel that reaches it. Codex does write an
+    ``<environment_context>`` block into the transcript, but it carries cwd,
+    shell, date, timezone and filesystem roots only — no environment variables —
+    so nothing an exporter sets can be recovered from the file. A prompt marker
+    can, and it follows HIDDEN_USER_MARKERS, which solves the same problem in
+    the same place.
+
+    The cost is that the marker is part of the prompt the model reads. Keep it
+    on its own line or at the very start so it reads as a directive to the
+    tooling.
+    """
+    if not session_path.exists():
+        return False
+    try:
+        for line in session_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if any(marker in line for marker in FORCE_MIRROR_MARKERS):
+                return True
+    except OSError:
+        return False
     return False
 
 
 def is_unmirrored_session(session_path: Path) -> bool:
-    """Return True when a Codex session file should not be mirrored to Matrix."""
-    return is_unmirrored_session_meta(extract_session_meta(session_path))
+    """Return True when a Codex session file should not be mirrored to Matrix.
+
+    The marker is only looked for once the metadata has already decided to
+    suppress, so the common path stays a single-line read rather than a scan of
+    the whole rollout.
+    """
+    if not is_unmirrored_session_meta(extract_session_meta(session_path)):
+        return False
+    return not has_force_mirror_marker(session_path)
 
 
 def has_hidden_user_marker(session_path: Path) -> bool:
@@ -155,6 +248,7 @@ def extract_session_meta(session_path: Path) -> dict | None:
                         "cwd": payload.get("cwd", ""),
                         "model": payload.get("model_provider", ""),
                         "source": payload.get("source"),
+                        "originator": payload.get("originator"),
                         "thread_source": payload.get("thread_source"),
                         "agent_nickname": payload.get("agent_nickname"),
                         "agent_role": payload.get("agent_role"),

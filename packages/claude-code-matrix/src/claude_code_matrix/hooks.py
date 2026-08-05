@@ -4,15 +4,17 @@ Each hook receives JSON on stdin with event-specific fields.
 Posts messages to Matrix via the bridge client.
 """
 
+import functools
 import json
 import sys
 import asyncio
 import os
 from pathlib import Path
 
-from matrix_bridge.config import load_config
+from matrix_bridge.config import is_suppressed_session, load_config
 from matrix_bridge.session import SessionMap
 from .bridge import MatrixBridge, STATUS_ACTIVE
+from .transcript import is_claude_code_payload
 
 
 STATE_DIR = Path.home() / ".ccmatrix"
@@ -24,6 +26,50 @@ def _is_enabled() -> bool:
     return ENABLED_FLAG.exists()
 
 
+def _drop_stale_entry(session_id: str) -> None:
+    """Retire a session-map entry this bridge has decided not to mirror.
+
+    Older plugin versions registered every session that reached these hooks,
+    including sessions this bridge does not own. A leftover *active* entry keeps
+    the daemon routing phone messages into that pane and keeps its room looking
+    live, so the first declined hook cleans it up. Reads before writing: these
+    hooks fire on every event, and an unconditional write would rewrite the map
+    constantly.
+    """
+    if not session_id:
+        return
+    session_map = SessionMap(STATE_DIR / "sessions.json")
+    entry = session_map.get(session_id)
+    if entry and entry.active:
+        session_map.deregister(session_id)
+
+
+def mirrors_only_owned_sessions(handler):
+    """Gate a hook handler on the two questions that precede any Matrix work.
+
+    1. Is this session *ours*? hooks/hooks.json is read by Codex too, which
+       fires these handlers with Codex thread ids — see
+       `transcript.is_claude_code_payload`.
+    2. Is this session addressed to the human at all? See
+       `matrix_bridge.config.is_suppressed_session`.
+
+    Applied to every handler in HANDLERS so the guarantee is structural rather
+    than remembered: a new hook cannot be registered without it, which
+    tests/test_hook_ownership.py asserts via the marker below.
+    """
+
+    @functools.wraps(handler)
+    async def wrapper(payload: dict) -> dict:
+        if not is_claude_code_payload(payload) or is_suppressed_session():
+            _drop_stale_entry(payload.get("session_id", ""))
+            return {}
+        return await handler(payload)
+
+    wrapper.mirrors_only_owned_sessions = True
+    return wrapper
+
+
+@mirrors_only_owned_sessions
 async def handle_session_start(payload: dict) -> dict:
     """Map session_id to tmux pane, create Matrix room for session."""
     session_id = payload.get("session_id", "")
@@ -84,6 +130,7 @@ def _format_tool_use(tool_name: str, tool_input: dict) -> str:
     return f"● {display_name}"
 
 
+@mirrors_only_owned_sessions
 async def _sync_to_matrix(payload: dict) -> dict:
     """Sync any new transcript messages to Matrix (text only)."""
     if not _is_enabled():
@@ -108,6 +155,7 @@ async def _sync_to_matrix(payload: dict) -> dict:
     return {}
 
 
+@mirrors_only_owned_sessions
 async def handle_pre_tool_use(payload: dict) -> dict:
     """Sync transcript, then send a tool-use one-liner to the room."""
     if not _is_enabled():
@@ -140,6 +188,7 @@ async def handle_pre_tool_use(payload: dict) -> dict:
     return {}
 
 
+@mirrors_only_owned_sessions
 async def handle_stop(payload: dict) -> dict:
     """Sync text messages; the final assistant message is tagged for server TTS."""
     if not _is_enabled():
@@ -166,11 +215,17 @@ async def handle_stop(payload: dict) -> dict:
     return {}
 
 
+@mirrors_only_owned_sessions
 async def handle_notification(payload: dict) -> dict:
-    """Notification hook — disabled, too noisy."""
+    """Notification hook — disabled, too noisy.
+
+    Wrapped anyway: the hook is registered in hooks.json, so if this ever grows
+    a body it must not be the one path that leaks a machine-driven session.
+    """
     return {}
 
 
+@mirrors_only_owned_sessions
 async def handle_session_end(payload: dict) -> dict:
     """Mark session as ended in Matrix room."""
     session_id = payload.get("session_id", "")
