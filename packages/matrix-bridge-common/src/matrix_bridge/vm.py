@@ -18,6 +18,14 @@ _VM_COLORS: dict[str, tuple[int, int, int, int]] = {
     "G": (255, 111, 145, 255),  # coral pink
     "H": (156, 39, 176, 255),   # violet
     "S": (255, 214, 10, 255),   # yellow
+    # Digits are a separate namespace for cloud-hosted boxes, so a glance at the
+    # room list distinguishes "a machine I run" from "a machine in the cloud".
+    # They need explicit entries: the fallback below is `ord(letter) % 6`, and
+    # ord("1") % 6 == 1, which collides with B's teal.
+    "1": (140, 90, 230, 255),   # purple
+    "2": (90, 180, 90, 255),    # green
+    "3": (230, 140, 30, 255),   # orange-red
+    "4": (33, 150, 243, 255),   # blue
 }
 
 # Fallback palette used when a hostname maps to an unknown letter. Indexed by
