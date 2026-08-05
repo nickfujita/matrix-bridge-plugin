@@ -147,7 +147,7 @@ def _install_notify_hook():
     if re.search(r"(?m)^notify\s*=\s*\[[^\n]*\]\s*$", content):
         content = re.sub(r"(?m)^notify\s*=\s*\[[^\n]*\]\s*$", notify_line, content, count=1)
     elif "notify" not in content:
-        content += f"\n{notify_line}\n"
+        content = _insert_top_level_key(content, notify_line)
     else:
         print("Warning: 'notify' exists in config.toml but is not a single-line array.")
         print(f"Please manually set it to: {notify_line}")
@@ -155,6 +155,31 @@ def _install_notify_hook():
 
     config_path.write_text(content)
     print("Added notify hook to ~/.codex/config.toml")
+
+
+def _insert_top_level_key(content: str, key_line: str) -> str:
+    """Insert a bare `key = value` line so it stays TOP-LEVEL in TOML.
+
+    A bare key appended to the end of a TOML file does NOT become a top-level
+    key — it belongs to whichever table header was declared last. A Codex
+    config ending in `[agents]` would therefore parse `notify` as an agent role
+    and Codex refuses to start:
+
+        invalid length 1, expected struct AgentRoleToml with 3 elements in `agents`
+
+    So the line must go before the first table header, not at the end.
+    """
+    lines = content.splitlines(keepends=True)
+    first_table = next(
+        (i for i, line in enumerate(lines) if line.lstrip().startswith("[")),
+        len(lines),
+    )
+    if first_table == len(lines):
+        # No tables at all — appending is safe, but keep the file newline-clean.
+        prefix = "" if content.endswith("\n") or not content else "\n"
+        return f"{content}{prefix}{key_line}\n"
+    lines.insert(first_table, f"{key_line}\n\n")
+    return "".join(lines)
 
 
 def _existing_notify_command(notify: object) -> str | None:
