@@ -166,10 +166,34 @@ no `cc.tts` tag and injects no sentinel context for that session.
 CCMATRIX_SUPPRESS_SESSION=1 tmux new-session -d -s reviewer claude
 ```
 
-Codex sessions have no equivalent switch: its bridge discovers sessions by
-watching `~/.codex/sessions/` from a long-lived daemon that never sees the
-spawning process's environment. Codex marks its *own* background subagents in
-session metadata instead — see `codex_matrix.transcript.is_unmirrored_session`.
+Codex answers the same question from the rollout instead of the environment,
+because it has to: its bridge discovers most sessions with a filesystem watcher
+over `~/.codex/sessions/`, running in a long-lived daemon that never sees the
+environment of whatever spawned the CLI. Two kinds of session are kept off the
+phone, both read out of the `session_meta` line Codex writes itself:
+
+- **background subagent threads**, marked `thread_source=subagent` with a parent
+  thread id — internal work for the parent agent;
+- **`codex exec` runs**, marked `source=exec` / `originator=codex_exec` — a
+  script started them, they run one turn and exit. Nobody is at a terminal, and
+  inbound phone replies are typed into a tmux pane, so an exec room could never
+  be answered even if you tried. One automation round used to open several.
+
+To put a scripted run back on the phone, put `CCMATRIX_FORCE_MIRROR` in its
+prompt:
+
+```bash
+codex exec "CCMATRIX_FORCE_MIRROR
+Summarise this morning's alerts"
+```
+
+It is a prompt marker rather than an environment variable for the reason above —
+the rollout is the only channel that reaches the watcher. Codex does write an
+`<environment_context>` block into the transcript, but it carries cwd, shell,
+date, timezone and filesystem roots only, so no exported variable can be
+recovered from the file. The trade-off is that the marker is part of the prompt
+the model reads; keep it on its own line. See
+`codex_matrix.transcript.is_unmirrored_session`.
 
 ## Configuration
 
@@ -193,7 +217,11 @@ Additional environment-only settings:
 |---------|---------|
 | `CCMATRIX_VM_LETTER` | Force this machine's identity letter (color + avatar). Required on hosts whose hostname isn't distinctive (many cloud instances); otherwise derived from the hostname's last alphabetic character. |
 | `CCMATRIX_ANTIGRAVITY_SKILL_DIRS` | (Antigravity only) `os.pathsep`-separated list of local skill roots to expose to Antigravity. Defaults to `~/.agents/skills`. |
-| `CCMATRIX_SUPPRESS_SESSION` | Set to `1` by whatever *spawns* an agent CLI programmatically. The spawned session gets no room, no notification, no TTS and no sentinel context — see [Which sessions get a room](#which-sessions-get-a-room). Unset/`0`/`false`/`no`/`off` all mean "normal human session". |
+| `CCMATRIX_SUPPRESS_SESSION` | (Claude Code / Antigravity) Set to `1` by whatever *spawns* an agent CLI programmatically. The spawned session gets no room, no notification, no TTS and no sentinel context — see [Which sessions get a room](#which-sessions-get-a-room). Unset/`0`/`false`/`no`/`off` all mean "normal human session". |
+
+Codex has no environment-variable equivalent — see the section above. Its
+`codex exec` runs are suppressed from rollout metadata, and `CCMATRIX_FORCE_MIRROR`
+in the prompt is the opt-in.
 
 See [docs/multi-machine-deployment.md](docs/multi-machine-deployment.md) for
 running the bridge across several machines (per-machine bot accounts, identity
