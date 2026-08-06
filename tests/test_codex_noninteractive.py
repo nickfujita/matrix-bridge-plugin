@@ -195,12 +195,7 @@ class WatchdogPathTests(unittest.IsolatedAsyncioTestCase):
         daemon.session_map = SessionMap(tmp / "codex-sessions.json")
         daemon.watcher = _WatcherStub()
         daemon.watched_sessions = set()
-        daemon._pending_assistant = {}
-        daemon._last_completed_turn = {}
-        daemon._inflight_turns = set()
-        daemon._decoration_tasks = set()
-        daemon._active_title_tasks = {}
-        daemon._title_locks = {}
+        daemon._reset_runtime_state()
         return daemon
 
     async def _feed(self, daemon, path: Path):

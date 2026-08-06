@@ -186,15 +186,27 @@ class CodexBridge:
         if not renamed:
             return False
         self.session_map.set_last_branch(session_id, current)
+        # The title no longer carries the ended marker. Recording that is what
+        # lets a resumed session's room lose its red dot: nothing else in the
+        # bridge ever renamed a room back out of the ended state.
+        self.session_map.set_room_marked_ended(session_id, False)
         return True
 
-    async def mark_session_ended(self, session_id: str) -> None:
-        """Update room name to ended status."""
+    async def mark_session_ended(self, session_id: str) -> bool:
+        """Update room name to ended status.
+
+        Returns whether Matrix accepted the rename, so the caller — and the
+        reconciler — can tell a completed title update from one to retry.
+        """
         entry = self.session_map.get(session_id)
         if not entry or not entry.room_id:
-            return
+            return False
         name = build_room_name(
             entry.cwd, status=STATUS_ENDED,
             repo_aliases=self.config.repo_aliases, branch=entry.last_branch,
         )
-        await self.bot_client.room_set_name(entry.room_id, name)
+        renamed = await self.bot_client.room_set_name(entry.room_id, name)
+        if not renamed:
+            return False
+        self.session_map.set_room_marked_ended(session_id, True)
+        return True
