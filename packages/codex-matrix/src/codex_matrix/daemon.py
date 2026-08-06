@@ -18,14 +18,16 @@ from pathlib import Path
 from matrix_bridge.config import load_config, MatrixConfig
 from matrix_bridge.matrix import MatrixClient
 from matrix_bridge.session import SessionMap
-from matrix_bridge.tmux import pane_current_command, send_keys
+from matrix_bridge.tmux import pane_current_command, pane_for_open_file, send_keys
 
 from .bridge import CodexBridge
 from .transcript import (
     extract_latest_assistant_after_last_hidden_marker,
     extract_session_meta,
     find_session_file,
+    format_turn_error,
     has_hidden_user_marker,
+    is_interactive_session,
     is_unmirrored_session,
 )
 from .watcher import SessionWatcher
@@ -36,6 +38,23 @@ STATE_DIR = Path.home() / ".ccmatrix"
 CODEX_ACTIVE_COMMANDS = {"codex", "node"}
 SESSION_CLEANUP_INTERVAL_SECONDS = 30
 UNKNOWN_PANE_STALE_SECONDS = 10 * 60
+
+# How long a *running* turn may add nothing to its rollout before the room gets
+# a state line. Turn-complete events cannot answer "did the agent stop?" — by
+# construction they only arrive when it did not. This is the only signal that
+# can.
+#
+# The threshold has to clear the longest legitimate quiet stretch or the notice
+# is worse than useless. A single `wait_agent` call has been measured at 60
+# minutes of zero rollout growth on a perfectly healthy session, so 90 minutes
+# is the floor that keeps this quiet in normal operation. It posts one m.notice
+# (silent, no push) and re-arms only once the rollout moves again.
+STALL_NOTICE_SECONDS = 90 * 60
+
+# Cap the repair burst on the first pass after upgrade. Every session retired
+# before room_marked_ended existed reads as needing a rename, and on a
+# long-lived machine that is dozens of rooms at once.
+ROOM_RECONCILE_MAX_PER_PASS = 20
 
 
 class CodexDaemon:
@@ -52,6 +71,16 @@ class CodexDaemon:
         self.next_batch: str | None = None
         # Track which sessions we're actively watching
         self.watched_sessions: set[str] = set()
+        self._reset_runtime_state()
+
+    def _reset_runtime_state(self) -> None:
+        """Initialize the daemon's in-memory bookkeeping.
+
+        Split out from __init__ so tests that assemble a partial daemon get all
+        of it from one call. Adding a field here previously meant editing every
+        such test builder, and forgetting one failed as an AttributeError deep
+        inside an unrelated code path.
+        """
         # Buffer assistant messages until turn-complete to avoid notification spam
         self._pending_assistant: dict[str, list[dict]] = {}
         # Dedupe turn-complete handling when both transcript and notify fire.
@@ -62,6 +91,14 @@ class CodexDaemon:
         self._decoration_tasks: set[asyncio.Task[None]] = set()
         self._active_title_tasks: dict[str, asyncio.Task[None]] = {}
         self._title_locks: dict[str, asyncio.Lock] = {}
+        # Serializes "does this session have a room yet, and if not make one".
+        # Room creation awaits, so two callers can otherwise both observe a
+        # missing room_id and both create one.
+        self._room_locks: dict[str, asyncio.Lock] = {}
+        # Sessions with a turn in flight (task_started seen, no task_complete
+        # or turn_aborted yet), and the stall notices already posted for them.
+        self._active_turns: set[str] = set()
+        self._stall_notified: dict[str, float] = {}
 
     async def start(self) -> None:
         """Start the daemon — runs both inbound and outbound loops."""
@@ -101,7 +138,7 @@ class CodexDaemon:
                 # Create Matrix room if session was registered but never got one
                 reused_room = bool(entry.room_id)
                 if not reused_room:
-                    await self.bridge.create_room(entry.session_id, entry.cwd)
+                    await self._ensure_room(entry.session_id, entry.cwd)
                 self.watcher.watch_file(session_file)
                 self.watched_sessions.add(entry.session_id)
                 logger.info(f"Resumed watching session {entry.session_id[:8]}")
@@ -133,6 +170,53 @@ class CodexDaemon:
                         "Failed to restore active room title for %s; session delivery is unaffected",
                         session_id[:8],
                     )
+
+    def _room_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the lock serializing room creation for a session."""
+        lock = self._room_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._room_locks[session_id] = lock
+        return lock
+
+    async def _ensure_room(self, session_id: str, cwd: str) -> None:
+        """Create the session's Matrix room, exactly once.
+
+        Three call sites can reach room creation for the same session — startup
+        discovery, the notify signal and the file watcher — and they interleave
+        freely because `create_room` awaits a Matrix round-trip. Without this
+        lock the second caller re-reads a session map that the first has not
+        written back yet, sees no room_id, and creates a duplicate; the map then
+        keeps only the last one and the earlier room is orphaned, holding a
+        fragment of the session's mirror stream. Re-checking the map *inside*
+        the lock is what makes the map entry the source of truth: the loser of
+        the race reuses the winner's room instead of creating its own.
+        """
+        async with self._room_lock(session_id):
+            entry = self.session_map.get(session_id)
+            if entry and entry.room_id:
+                return
+            await self.bridge.create_room(session_id, cwd)
+
+    async def _reactivate_session(self, session_id: str, entry, reason: str) -> None:
+        """Bring a retired session back, keeping the room it already owns.
+
+        Retirement used to be a one-way door. Every later event for the session
+        hit an `active` guard and returned, so a single false positive from the
+        staleness heuristic cost the entire remainder of the session — 14 hours
+        and ~13 MB of rollout in the incident this was written for. Fresh
+        qualifying activity is proof the session is alive, and `register`
+        preserves `room_id`, so the operator's existing room simply resumes
+        rather than a second one appearing beside it.
+        """
+        # Passing the stored pane keeps a real tmux binding intact; `register`
+        # ignores the "unknown" placeholder rather than overwriting with it.
+        self.session_map.register(session_id, entry.tmux_pane, entry.cwd)
+        self.watched_sessions.add(session_id)
+        logger.info(f"Un-retired Codex session {session_id[:8]}: {reason}")
+        if entry.room_id:
+            # The room is still titled with the ended marker. Put it back.
+            self._schedule_active_title_restore(session_id)
 
     def _title_lock(self, session_id: str) -> asyncio.Lock:
         """Return the lock serializing every title transition for a session."""
@@ -230,6 +314,7 @@ class CodexDaemon:
         thread_id: str,
         turn_id: str = "",
         fallback_assistant: str = "",
+        turn_error: str | None = None,
     ) -> None:
         """Flush buffered assistant messages when a turn completes.
 
@@ -262,6 +347,26 @@ class CodexDaemon:
             session_file = find_session_file(thread_id)
             if session_file and is_unmirrored_session(session_file):
                 await self._retire_session(thread_id, "unmirrored background thread")
+                return
+
+            if turn_error:
+                # The turn died. Anything buffered is mid-turn progress, and
+                # flushing it as the final reply reports forward motion on a
+                # session that has stopped — the operator would have been told
+                # "the re-reviews are running now" about a turn a policy filter
+                # had just killed. Replace it rather than adding to it, and
+                # notify: this is the message that turns a silent night into a
+                # phone buzz.
+                self._pending_assistant.pop(thread_id, None)
+                await self.bridge.send_messages(
+                    thread_id,
+                    [{"role": "assistant", "text": turn_error}],
+                    notify_final=True,
+                )
+                await self.bridge.set_typing(thread_id, False)
+                logger.info(f"Mirrored turn error for {thread_id[:8]}: {turn_error.splitlines()[0]}")
+                if turn_id:
+                    self._last_completed_turn[thread_id] = turn_id
                 return
 
             # Flush buffered assistant messages — last one triggers notification
@@ -321,11 +426,16 @@ class CodexDaemon:
             if meta:
                 cwd = meta.get("cwd", cwd)
             self.session_map.register(thread_id, tmux_pane, cwd)
+        elif not entry.active:
+            # The notify hook fired for a session the reaper had retired. The
+            # unmirrored check above has already passed, so this session
+            # qualifies for mirroring and the retirement was wrong.
+            await self._reactivate_session(thread_id, entry, "notify hook fired")
 
         # Create Matrix room if needed
         entry = self.session_map.get(thread_id)
         if entry and not entry.room_id:
-            await self.bridge.create_room(thread_id, entry.cwd or cwd)
+            await self._ensure_room(thread_id, entry.cwd or cwd)
 
         # Start watching the session file
         self.watcher.watch_file(session_file)
@@ -352,7 +462,12 @@ class CodexDaemon:
 
         entry = self.session_map.get(thread_id)
         if entry and not entry.active:
-            return
+            # New rollout content for a retired session. The unmirrored check
+            # above has already passed, so this session still qualifies for
+            # mirroring and is demonstrably alive — the file just grew. Bring
+            # it back instead of discarding the rest of the session.
+            await self._reactivate_session(thread_id, entry, "new rollout activity")
+            entry = self.session_map.get(thread_id)
 
         # Auto-register new sessions discovered via file watcher
         if not entry:
@@ -368,7 +483,7 @@ class CodexDaemon:
         # Create Matrix room if needed
         refresh_existing_room = bool(entry and entry.room_id)
         if entry and not entry.room_id:
-            await self.bridge.create_room(thread_id, entry.cwd)
+            await self._ensure_room(thread_id, entry.cwd)
             entry = self.session_map.get(thread_id)
 
         if not entry or not entry.room_id or not entry.active:
@@ -403,8 +518,24 @@ class CodexDaemon:
 
         seen_turn_ids: set[str] = set()
         for event in control_events:
-            if event.get("event") != "task_complete":
+            event_name = event.get("event")
+
+            if event_name == "task_started":
+                self._active_turns.add(thread_id)
+                self._stall_notified.pop(thread_id, None)
                 continue
+
+            if event_name == "turn_aborted":
+                self._active_turns.discard(thread_id)
+                self._stall_notified.pop(thread_id, None)
+                continue
+
+            if event_name != "task_complete":
+                continue
+
+            self._active_turns.discard(thread_id)
+            self._stall_notified.pop(thread_id, None)
+
             turn_id = event.get("turn_id", "")
             key = turn_id or "__missing__"
             if key in seen_turn_ids:
@@ -413,7 +544,13 @@ class CodexDaemon:
             # The transcript is a second source of truth for turn completion.
             # Keep listening here so final reply delivery still works if the
             # notify hook is delayed or misses a callback.
-            await self._on_turn_complete(thread_id, turn_id)
+            #
+            # For an errored turn it is the *only* source: Codex does not fire
+            # the notify hook at all when a turn ends in error, so nothing
+            # reaches the daemon down the hook path.
+            await self._on_turn_complete(
+                thread_id, turn_id, turn_error=format_turn_error(event),
+            )
 
         # Branch names are cosmetic. Refresh only after all messages and
         # completion controls from this file batch have been handled so a slow
@@ -458,12 +595,101 @@ class CodexDaemon:
                 await self._cleanup_ended_sessions()
             except Exception as e:
                 logger.error(f"Session cleanup error: {e}")
+            try:
+                await self._reconcile_room_status()
+            except Exception as e:
+                logger.error(f"Room status reconcile error: {e}")
+
+    async def _reconcile_room_status(self) -> None:
+        """Make every room title agree with its session's real state.
+
+        Renaming used to happen only on the paths that call `_retire_session`,
+        which left two holes and no way out of either:
+
+        * Same-pane succession. `SessionMap.register` retires the previous
+          session on a pane by writing the data layer directly — there is no
+          Matrix client at that level, and it also runs inside the notify-hook
+          subprocess. That is the *normal* way an interactive session ends, and
+          it was the one common exit that never got a red dot.
+        * Resumption. Nothing in the bridge ever renamed a room back *out* of
+          the ended state, so a session that came back — including one the
+          reaper retired by mistake — kept a room that said it was over.
+
+        Comparing the two recorded facts catches both, and any future path that
+        forgets to rename, without that path having to know about this one.
+        Failures leave the flag untouched so the next pass retries.
+        """
+        repaired = 0
+        for entry in self.session_map.all_sessions():
+            if not entry.room_id:
+                continue
+            if entry.active == (not entry.room_marked_ended):
+                continue
+            if repaired >= ROOM_RECONCILE_MAX_PER_PASS:
+                return
+
+            async with self._title_lock(entry.session_id):
+                # Re-read inside the lock: a retire or resume may have landed
+                # while an earlier entry in this pass was awaiting Matrix.
+                current = self.session_map.get(entry.session_id)
+                if not current or not current.room_id:
+                    continue
+                if current.active == (not current.room_marked_ended):
+                    continue
+
+                if current.active:
+                    ok = await self.bridge.mark_session_active(entry.session_id)
+                    label = "active"
+                else:
+                    ok = await self.bridge.mark_session_ended(entry.session_id)
+                    label = "ended"
+
+            repaired += 1
+            if ok:
+                logger.info(
+                    "Reconciled room title for %s → %s", entry.session_id[:8], label,
+                )
+            else:
+                logger.warning(
+                    "Failed to reconcile room title for %s → %s; will retry",
+                    entry.session_id[:8], label,
+                )
 
     async def _cleanup_ended_sessions(self) -> None:
         """Retire active sessions whose originating Codex pane has ended."""
         for entry in self.session_map.active_sessions():
+            session_file = find_session_file(entry.session_id)
+
             if not entry.tmux_pane or entry.tmux_pane == "unknown":
-                session_file = find_session_file(entry.session_id)
+                # The file watcher registers every session it discovers with a
+                # placeholder pane, expecting the notify hook to backfill the
+                # real one. When that backfill does not arrive the entry keeps
+                # the placeholder indefinitely and the staleness heuristic below
+                # eventually retires a live session. Rather than trusting the
+                # hook, resolve the pane from the process that holds the rollout
+                # open — the daemon can always do this for itself.
+                if session_file:
+                    pane = pane_for_open_file(session_file)
+                    if pane:
+                        self.session_map.register(entry.session_id, pane, entry.cwd)
+                        logger.info(
+                            "Backfilled tmux pane %s for Codex session %s",
+                            pane, entry.session_id[:8],
+                        )
+                        entry = self.session_map.get(entry.session_id)
+                        if not entry:
+                            continue
+
+            if not entry.tmux_pane or entry.tmux_pane == "unknown":
+                # Still no pane. A session genuinely launched outside tmux is
+                # legitimate, and for an interactive one the absence of a pane
+                # says nothing about whether it is alive — so the staleness
+                # heuristic must not apply to it. It stays aimed at the
+                # background subagent and `codex exec` threads it was built for,
+                # which do end silently and do need reaping.
+                if session_file and is_interactive_session(session_file):
+                    await self._maybe_notify_stall(entry, session_file)
+                    continue
                 if session_file and time.time() - session_file.stat().st_mtime > UNKNOWN_PANE_STALE_SECONDS:
                     await self._retire_session(entry.session_id, "stale provisional session without tmux pane")
                 elif not session_file and entry.started_at and time.time() - entry.started_at > UNKNOWN_PANE_STALE_SECONDS:
@@ -472,10 +698,56 @@ class CodexDaemon:
 
             command = pane_current_command(entry.tmux_pane)
             if command and command.lower() in CODEX_ACTIVE_COMMANDS:
+                if session_file:
+                    await self._maybe_notify_stall(entry, session_file)
                 continue
 
             reason = "tmux pane missing" if not command else f"pane command is {command}"
             await self._retire_session(entry.session_id, reason)
+
+    async def _maybe_notify_stall(self, entry, session_file: Path) -> None:
+        """Post one quiet state line when a running turn stops making progress.
+
+        "Did the agent stop?" cannot be answered from turn-complete events —
+        those only ever arrive when it did not. The pairing that does answer it
+        is a turn known to be in flight plus a rollout that is no longer
+        growing, which is exactly the state the operator sat in for four and a
+        half hours with no way to see it.
+
+        Deliberately an m.notice: it is a state indicator to find when someone
+        looks at the room, not a push. Mirroring the terminal turn error is what
+        buzzes the phone.
+        """
+        if entry.session_id not in self._active_turns:
+            return
+
+        try:
+            mtime = session_file.stat().st_mtime
+        except OSError:
+            return
+
+        idle = time.time() - mtime
+        if idle < STALL_NOTICE_SECONDS:
+            return
+
+        # Re-arm only when the rollout actually moves again, so a session that
+        # stays quiet gets one line rather than one every cleanup pass.
+        if self._stall_notified.get(entry.session_id) == mtime:
+            return
+        self._stall_notified[entry.session_id] = mtime
+
+        minutes = int(idle // 60)
+        await self.bridge.send_messages(
+            entry.session_id,
+            [{
+                "role": "tool",
+                "text": f"⏳ No activity for {minutes} min — turn still marked running.",
+            }],
+        )
+        logger.info(
+            "Posted stall notice for %s after %d min of rollout silence",
+            entry.session_id[:8], minutes,
+        )
 
     # --- Inbound: Matrix → tmux ---
 

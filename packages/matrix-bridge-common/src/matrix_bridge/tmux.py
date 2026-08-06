@@ -4,10 +4,13 @@ import asyncio
 import logging
 import subprocess
 import tempfile
+from pathlib import Path
 
 import libtmux
 
 logger = logging.getLogger(__name__)
+
+PROC_ROOT = Path("/proc")
 
 
 def get_server() -> libtmux.Server | None:
@@ -49,6 +52,75 @@ def pane_current_command(pane_id: str) -> str | None:
         return None
     command = result.stdout.strip()
     return command or None
+
+
+def pid_holding_file(target: Path, proc_root: Path = PROC_ROOT) -> int | None:
+    """Return a PID with `target` open, or None.
+
+    The agent CLI keeps its rollout file open for append for the whole life of
+    the session, so "who has this file open" is a direct, always-available link
+    from a session file back to the process driving it — no cooperation from
+    the process required, and unlike file mtime it does not go stale during a
+    long tool call.
+    """
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return None
+
+    for entry in _iter_pids(proc_root):
+        fd_dir = proc_root / str(entry) / "fd"
+        try:
+            handles = list(fd_dir.iterdir())
+        except OSError:
+            # Processes owned by other users, and ones that exited between the
+            # listing and the read, are both normal here.
+            continue
+        for handle in handles:
+            try:
+                if handle.resolve() == resolved:
+                    return entry
+            except OSError:
+                continue
+    return None
+
+
+def _iter_pids(proc_root: Path) -> list[int]:
+    try:
+        return sorted(int(p.name) for p in proc_root.iterdir() if p.name.isdigit())
+    except OSError:
+        return []
+
+
+def pane_from_process_env(pid: int, proc_root: Path = PROC_ROOT) -> str | None:
+    """Return the TMUX_PANE a process was launched under, or None.
+
+    This is the same value the notify hook reports, read from the authoritative
+    source instead of being relayed. It lets the daemon establish a session's
+    pane binding on its own, so a provisional `unknown` entry is repaired even
+    when the notify hook never fires — a hook that is missing, misconfigured,
+    disabled or pinned to a stale plugin version no longer costs the session
+    its pane, and therefore no longer feeds it to the staleness reaper.
+    """
+    try:
+        raw = (proc_root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+
+    for item in raw.split(b"\0"):
+        key, sep, value = item.partition(b"=")
+        if sep and key == b"TMUX_PANE":
+            pane = value.decode("utf-8", errors="replace").strip()
+            return pane or None
+    return None
+
+
+def pane_for_open_file(target: Path, proc_root: Path = PROC_ROOT) -> str | None:
+    """Resolve the tmux pane of whichever process holds `target` open."""
+    pid = pid_holding_file(target, proc_root=proc_root)
+    if pid is None:
+        return None
+    return pane_from_process_env(pid, proc_root=proc_root)
 
 
 def _exit_copy_mode(pane: libtmux.Pane) -> bool:

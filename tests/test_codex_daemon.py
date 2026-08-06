@@ -184,12 +184,7 @@ class CodexDaemonSignalTests(unittest.IsolatedAsyncioTestCase):
         watcher = _RecordingSessionFileHandler(events, asyncio.get_running_loop())
         daemon.watcher = watcher
         daemon.watched_sessions = set()
-        daemon._pending_assistant = {}
-        daemon._last_completed_turn = {}
-        daemon._inflight_turns = set()
-        daemon._decoration_tasks = set()
-        daemon._active_title_tasks = {}
-        daemon._title_locks = {}
+        daemon._reset_runtime_state()
 
         return daemon, bridge, session_map, watcher, matrix_client, session_file, events
 
@@ -532,12 +527,7 @@ class CodexDaemonBranchRefreshTests(unittest.IsolatedAsyncioTestCase):
         daemon.bridge = bridge
         daemon.session_map = session_map
         daemon.watched_sessions = {self.thread_id}
-        daemon._pending_assistant = {}
-        daemon._last_completed_turn = {}
-        daemon._inflight_turns = set()
-        daemon._decoration_tasks = set()
-        daemon._active_title_tasks = {}
-        daemon._title_locks = {}
+        daemon._reset_runtime_state()
 
         return daemon, bridge, session_map, matrix_client, session_file, events
 
@@ -900,9 +890,7 @@ class CodexDaemonTurnCompleteTests(unittest.IsolatedAsyncioTestCase):
             daemon = CodexDaemon.__new__(CodexDaemon)
             daemon.bridge = _BridgeStub()
             daemon.session_map = _SessionMapStub()
-            daemon._pending_assistant = {}
-            daemon._last_completed_turn = {}
-            daemon._inflight_turns = set()
+            daemon._reset_runtime_state()
 
             with patch("codex_matrix.daemon.find_session_file", return_value=session_file):
                 await daemon._on_turn_complete("thread-1", "turn-1")
@@ -939,14 +927,10 @@ class CodexDaemonTurnCompleteTests(unittest.IsolatedAsyncioTestCase):
             daemon.bridge = _BridgeStub()
             daemon.session_map = _SessionMapStub()
             daemon.watched_sessions = {"thread-1"}
+            daemon._reset_runtime_state()
             daemon._pending_assistant = {
                 "thread-1": [{"role": "assistant", "text": "background result"}],
             }
-            daemon._last_completed_turn = {}
-            daemon._inflight_turns = set()
-            daemon._decoration_tasks = set()
-            daemon._active_title_tasks = {}
-            daemon._title_locks = {}
 
             with patch("codex_matrix.daemon.find_session_file", return_value=session_file):
                 await daemon._on_turn_complete("thread-1", "turn-1")

@@ -23,6 +23,13 @@ class SessionEntry:
     synced_message_count: int = 0  # How many transcript messages have been sent to Matrix
     pending_user_skips: int = 0  # User messages the daemon already sent/echoed to room
     last_branch: str | None = None  # Last git branch the room name reflects
+    # Whether the room *title* currently shows the ended marker. This is not a
+    # duplicate of `active`: `active` is the data-layer truth, while this
+    # records what the operator can actually see in their room list. They drift
+    # apart whenever a session is retired without a Matrix round-trip — most
+    # often same-pane succession below, which is the normal way an interactive
+    # session ends. A reconciler compares the two and repairs the title.
+    room_marked_ended: bool = False
 
 
 class SessionMap:
@@ -55,6 +62,16 @@ class SessionMap:
             # Only one live session can own a given tmux pane. Retire any
             # older sessions still marked active on that pane so stale Matrix
             # rooms do not route into a newer Codex/Claude session.
+            #
+            # This retires purely in the data layer — there is no Matrix client
+            # at this level, and this runs inside the short-lived notify-hook
+            # subprocess as well as the daemon. The predecessor's room title is
+            # therefore left showing the active form even though the session is
+            # over, and this is the *normal* way an interactive session ends
+            # (quit Codex, start the next one in the same pane), which made it
+            # the one common exit that never got a red dot. `room_marked_ended`
+            # stays False here on purpose: the daemon's reconciler sees the
+            # active/title mismatch and performs the rename.
             if pane_is_known:
                 now = time.time()
                 for other_session_id, other in data.items():
@@ -96,6 +113,19 @@ class SessionMap:
             data = self._load()
             if session_id in data:
                 data[session_id]["room_id"] = room_id
+                self._save(data)
+
+    def set_room_marked_ended(self, session_id: str, marked: bool) -> None:
+        """Record whether the room title currently shows the ended marker.
+
+        Only ever called after Matrix has acknowledged the rename, so a failed
+        title update is retried by the next reconciler pass rather than being
+        silently recorded as done.
+        """
+        with self.lock:
+            data = self._load()
+            if session_id in data:
+                data[session_id]["room_marked_ended"] = marked
                 self._save(data)
 
     def set_last_branch(self, session_id: str, branch: str | None) -> None:
@@ -155,3 +185,12 @@ class SessionMap:
             for entry in data.values()
             if entry.get("active")
         ]
+
+    def all_sessions(self) -> list[SessionEntry]:
+        """Every tracked session, retired ones included.
+
+        The room-title reconciler needs the retired entries specifically — a
+        room whose title never caught up with its session's death is only
+        visible from the inactive side of the map.
+        """
+        return [self._entry_from_dict(entry) for entry in self._load().values()]

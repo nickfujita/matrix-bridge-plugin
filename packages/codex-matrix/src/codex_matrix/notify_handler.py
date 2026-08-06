@@ -24,6 +24,7 @@ import logging
 from pathlib import Path
 
 from matrix_bridge.session import SessionMap
+from matrix_bridge.tmux import pane_for_open_file
 from .transcript import (
     find_session_file,
     has_force_mirror_marker,
@@ -86,6 +87,22 @@ def handle_notify():
     # the authoritative tmux pane binding for the live Codex process, so this
     # call is allowed to refresh an existing session discovered provisionally
     # by the file watcher.
+    #
+    # When TMUX_PANE is not in this process's environment, fall back to reading
+    # it from the process that holds the rollout open. Without a pane the entry
+    # keeps the file watcher's "unknown" placeholder, which is what feeds a live
+    # session to the staleness reaper — so it is worth one /proc scan to avoid.
+    if not tmux_pane and session_file:
+        tmux_pane = pane_for_open_file(session_file) or ""
+        if tmux_pane:
+            logger.info(f"Resolved pane {tmux_pane} for {thread_id[:8]} from the process table")
+
+    if not tmux_pane:
+        logger.warning(
+            f"No tmux pane for Codex session {thread_id[:8]}; "
+            "entry stays provisional and inbound replies cannot be routed"
+        )
+
     session_map.register(thread_id, tmux_pane or "unknown", cwd)
     logger.info(f"Registered Codex session {thread_id[:8]} (pane: {tmux_pane}, cwd: {cwd})")
 

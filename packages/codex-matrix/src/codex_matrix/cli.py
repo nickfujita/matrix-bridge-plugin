@@ -273,7 +273,8 @@ def _write_notify_scripts(passthrough_command: str | None) -> None:
         "# Codex Matrix bridge notify handler - called by Codex on agent-turn-complete.\n"
         'echo "$(date) notify called with: ${1:0:200}" >> '
         f"{shlex.quote(str(state_dir / 'codex-notify.log'))}\n"
-        f"cd {shlex.quote(str(project_root))} || exit 1\n"
+        + "\n".join(_plugin_root_resolution_lines(project_root)) + "\n"
+        'cd "$matrix_root" || exit 1\n'
         'uv run --quiet python -c "from codex_matrix.notify_handler import handle_notify; handle_notify()" "$@" '
         f"2>> {shlex.quote(str(state_dir / 'codex-notify.log'))}\n"
     )
@@ -313,6 +314,49 @@ def _write_notify_scripts(passthrough_command: str | None) -> None:
 
     matrix_notify.chmod(0o755)
     wrapper.chmod(0o755)
+
+
+_VERSION_DIR_RE = re.compile(r"^v?\d+(\.\d+)+$")
+
+# Relative path that proves a candidate directory really is a plugin checkout.
+_PLUGIN_MARKER = "packages/codex-matrix/src/codex_matrix/notify_handler.py"
+
+
+def _plugin_root_resolution_lines(project_root: Path) -> list[str]:
+    """Emit shell that sets `matrix_root` to the plugin root to run from.
+
+    This script is written once, when the bridge is enabled, but it is executed
+    on every turn for as long as the plugin is installed. A plugin manager
+    installs each release into its own versioned directory, so baking in the
+    directory that happened to be current at enable time means the hook keeps
+    calling into that version forever while the daemon moves on — observed in
+    the field as a hook pinned to 0.5.7 against a 0.5.10 daemon, with nothing
+    that would ever refresh it.
+
+    So when the root sits in a versioned layout, resolve the newest installed
+    version at call time instead. `sort -V` orders by version rather than
+    lexically, which matters precisely here: 0.5.10 sorts *below* 0.5.7 as
+    text. A candidate only wins if it actually contains the handler, and the
+    path recorded at enable time stays as the fallback, so an unrecognised
+    layout behaves exactly as before.
+    """
+    if not _VERSION_DIR_RE.match(project_root.name):
+        # A plain checkout — no version dirs to choose between.
+        return [f"matrix_root={shlex.quote(str(project_root))}"]
+
+    versions_dir = project_root.parent
+    return [
+        "# Resolve the plugin root at run time. Installing a new version creates",
+        "# a new directory beside this one, and this script is not rewritten on",
+        "# upgrade — a hard-coded version would keep calling the version that was",
+        "# current when the bridge was enabled.",
+        f"matrix_root={shlex.quote(str(project_root))}",
+        f"for candidate in $(ls -1d {shlex.quote(str(versions_dir))}/*/ 2>/dev/null | sort -V); do",
+        f'  if [[ -f "${{candidate}}{_PLUGIN_MARKER}" ]]; then',
+        '    matrix_root="${candidate%/}"',
+        "  fi",
+        "done",
+    ]
 
 
 def _get_notify_script_path() -> str:

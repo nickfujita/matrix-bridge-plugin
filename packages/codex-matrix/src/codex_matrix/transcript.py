@@ -26,6 +26,10 @@ FORCE_MIRROR_MARKERS = (
     "CCMATRIX_FORCE_MIRROR",
 )
 
+# `originator` values Codex writes for its interactive entry points.
+# `codex-tui` is current; `codex_cli_rs` appears on older builds.
+INTERACTIVE_ORIGINATORS = {"codex-tui", "codex_cli_rs", "codex-cli-rs"}
+
 
 def _is_hidden_user_text(text: str) -> bool:
     """Return True for automation prompts that should not be mirrored to Matrix."""
@@ -66,6 +70,85 @@ def is_noninteractive_session_meta(meta: dict | None) -> bool:
         return True
 
     return False
+
+
+def is_interactive_session_meta(meta: dict | None) -> bool:
+    """Return True when a person is sitting at a terminal driving this session.
+
+    The sibling of is_noninteractive_session_meta, and the discriminator the
+    reaper needs. `_cleanup_ended_sessions` retires any session that has no tmux
+    pane and whose rollout has been quiet for a few minutes. That is a sound
+    proxy for "background subagent thread" only on a machine where interactive
+    Codex always runs inside tmux. On a managed cloud box it does not run under
+    tmux at all — the process tree is plain node → codex — so the box's *primary*
+    interactive session registers with ``tmux_pane: "unknown"`` and is
+    permanently eligible for a reaper aimed at something else entirely. It was
+    retired mid-session once and every later line of a 14-hour rollout was
+    discarded.
+
+    An interactive session without a pane is the norm on such a box, not
+    evidence of abandonment, so pane presence cannot carry this decision.
+    Rollout metadata can: ``thread_source`` is ``"user"`` for a session a human
+    started, and ``originator`` is ``codex-tui`` (or ``codex_cli_rs`` on older
+    builds) for the interactive entry points.
+
+    Subagent and `codex exec` shapes are excluded up front by delegating to
+    is_unmirrored_session_meta, so the two classifiers can never both claim the
+    same session and the reaper keeps working on the threads it was built for.
+    """
+    if not meta:
+        return False
+
+    # A background or scripted thread is never interactive, whatever else its
+    # metadata says. Checked first so `originator: codex-tui` on a subagent
+    # thread — the single most common shape in a real rollout directory — does
+    # not accidentally win the session reaper immunity.
+    if is_unmirrored_session_meta(meta):
+        return False
+
+    thread_source = meta.get("thread_source")
+    if isinstance(thread_source, str) and thread_source.strip().lower() == "user":
+        return True
+
+    originator = meta.get("originator")
+    if isinstance(originator, str) and originator.strip().lower() in INTERACTIVE_ORIGINATORS:
+        return True
+
+    return False
+
+
+def is_interactive_session(session_path: Path) -> bool:
+    """Return True when a session file belongs to a human-driven Codex session."""
+    return is_interactive_session_meta(extract_session_meta(session_path))
+
+
+def format_turn_error(event: dict) -> str | None:
+    """Render an errored ``task_complete`` as the line the room should receive.
+
+    Returns None for a clean completion, so callers can use it as the test for
+    "did this turn die?".
+
+    A turn killed by the backend produces ``last_agent_message: null`` and an
+    ``error`` block. Nothing arrives to mirror, and whatever assistant
+    commentary is sitting in the daemon's buffer is *mid-turn progress* — in the
+    incident that motivated this, the last buffered line was "The exact-commit
+    re-reviews are running now…", written two minutes before a content-policy
+    filter terminated the turn. Flushing that as the final reply is worse than
+    silence: it reports forward progress on a session that has stopped.
+    """
+    kind = (event.get("error_kind") or "").strip()
+    message = " ".join((event.get("error") or "").split())
+    if not kind and not message:
+        return None
+
+    headline = f"⚠️ Turn ended in error: {kind}" if kind else "⚠️ Turn ended in error"
+    parts = [headline]
+    if message:
+        parts.append(message[:800])
+
+    final = (event.get("last_agent_message") or "").strip()
+    parts.append(final if final else "(no final message)")
+    return "\n\n".join(parts)
 
 
 def is_unmirrored_session_meta(meta: dict | None) -> bool:
@@ -350,13 +433,38 @@ def extract_messages_from_offset(session_path: Path, byte_offset: int) -> tuple[
 
         if obj.get("type") == "event_msg":
             payload = obj.get("payload", {})
-            if payload.get("type") == "task_complete":
+            event_type = payload.get("type")
+            if event_type == "task_complete":
                 # Surface task completion as a control event so the daemon can
                 # flush the final assistant reply even if the notify hook is
                 # late or absent for this session.
+                #
+                # `error` is carried through deliberately. Codex does not fire
+                # the notify hook at all when a turn ends in error (measured
+                # 0/6 across two machines and two error kinds), so this
+                # rollout-derived path is the *only* one that can ever observe
+                # a failed turn. Dropping the error here left the daemon
+                # flushing stale progress commentary in place of the truth.
+                error = payload.get("error")
+                if not isinstance(error, dict):
+                    error = {"message": error} if error else {}
                 messages.append({
                     "role": "control",
                     "event": "task_complete",
+                    "turn_id": payload.get("turn_id", ""),
+                    "error": error.get("message") or "",
+                    "error_kind": error.get("codex_error_info") or "",
+                    "last_agent_message": payload.get("last_agent_message"),
+                })
+            elif event_type in ("task_started", "turn_aborted"):
+                # Turn boundaries drive the stall notice. A turn that is
+                # running is the only state in which "the rollout stopped
+                # growing" means anything is wrong. `turn_aborted` is included
+                # so an operator pressing ESC closes the turn too — otherwise
+                # the daemon would believe a turn was live forever.
+                messages.append({
+                    "role": "control",
+                    "event": event_type,
                     "turn_id": payload.get("turn_id", ""),
                 })
             continue
