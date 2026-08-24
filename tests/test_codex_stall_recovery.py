@@ -616,6 +616,15 @@ class StallNoticeTests(unittest.IsolatedAsyncioTestCase):
 class NotifyScriptVersionResolutionTests(unittest.TestCase):
     """The hook must follow the plugin across upgrades, not pin to install time."""
 
+    def setUp(self):
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self._home_patch = patch(
+            "codex_matrix.cli.Path.home", return_value=Path(self._home.name) / "home"
+        )
+        self._home_patch.start()
+        self.addCleanup(self._home_patch.stop)
+
     def _cache(self, root: Path, *versions: str) -> Path:
         cache = root / "cache" / "claude-code-matrix"
         for version in versions:
@@ -624,7 +633,27 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
             )
             marker.mkdir(parents=True)
             (marker / "notify_handler.py").write_text("")
+            manifest = cache / version / ".claude-plugin"
+            manifest.mkdir()
+            (manifest / "plugin.json").write_text(
+                json.dumps({"name": "claude-code-matrix", "version": version})
+            )
         return cache
+
+    @staticmethod
+    def _install_revision(candidate: Path, revision: str) -> None:
+        (candidate / ".codex-marketplace-install.json").write_text(
+            json.dumps({"revision": revision})
+        )
+
+    @staticmethod
+    def _active_revision(home: Path, revision: str) -> None:
+        config_dir = home / ".codex"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.toml").write_text(
+            "[marketplaces.claude-code-matrix]\n"
+            f'last_revision = "{revision}"\n'
+        )
 
     def _resolve(self, project_root: Path) -> str:
         script = "\n".join(_plugin_root_resolution_lines(project_root))
@@ -657,19 +686,124 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
             cache = self._cache(Path(tmp), "0.5.7", "0.5.9", "0.5.10", "0.5.11")
             self.assertEqual(self._resolve(cache / "0.5.7"), str(cache / "0.5.11"))
 
+    def test_optional_v_prefix_and_whitespace_paths_use_numeric_version_order(self):
+        """The generated shell must not split cache paths or order v-prefixed versions textually."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            cache = self._cache(root / "cache with spaces", "v0.5.2", "0.5.12")
+            with patch("codex_matrix.cli.Path.home", return_value=home):
+                self.assertEqual(self._resolve(cache / "v0.5.2"), str(cache / "0.5.12"))
+
     def test_a_directory_without_the_handler_is_not_a_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = self._cache(Path(tmp), "0.5.7")
             (cache / "0.5.99").mkdir(parents=True)  # partial/aborted install
             self.assertEqual(self._resolve(cache / "0.5.7"), str(cache / "0.5.7"))
 
-    def test_a_plain_checkout_is_used_verbatim(self):
+    def test_a_plain_checkout_uses_itself_when_no_installed_cache_is_available(self):
         with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
             checkout = Path(tmp) / "matrix-bridge-plugin"
             checkout.mkdir()
-            lines = _plugin_root_resolution_lines(checkout)
-            self.assertEqual(len(lines), 1, "no version dirs to choose between")
-            self.assertEqual(self._resolve(checkout), str(checkout))
+            with patch("codex_matrix.cli.Path.home", return_value=home):
+                self.assertEqual(self._resolve(checkout), str(checkout))
+
+    def test_a_plain_checkout_prefers_the_active_codex_plugin_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            checkout = root / "matrix-bridge-plugin"
+            checkout.mkdir()
+            active = (
+                home
+                / ".codex/plugins/cache/claude-code-matrix/claude-code-matrix/0.5.11"
+            )
+            marker = active / "packages/codex-matrix/src/codex_matrix/notify_handler.py"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("")
+            manifest = active / ".claude-plugin"
+            manifest.mkdir()
+            (manifest / "plugin.json").write_text(
+                json.dumps({"name": "claude-code-matrix", "version": "0.5.11"})
+            )
+
+            with patch("codex_matrix.cli.Path.home", return_value=home):
+                self.assertEqual(self._resolve(checkout), str(active))
+
+    def test_a_later_directory_with_a_mismatched_manifest_is_not_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self._cache(Path(tmp), "0.5.11", "0.5.12")
+            (cache / "0.5.12/.claude-plugin/plugin.json").write_text(
+                json.dumps({"name": "claude-code-matrix", "version": "0.5.11"})
+            )
+
+            self.assertEqual(self._resolve(cache / "0.5.11"), str(cache / "0.5.11"))
+
+    def test_active_marketplace_revision_beats_a_later_cached_version(self):
+        """A rollback selected by Codex must beat generic highest-version selection."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            cache = self._cache(root, "v0.5.2", "0.5.12")
+            self._install_revision(cache / "v0.5.2", "rollback-revision")
+            self._install_revision(cache / "0.5.12", "newer-revision")
+            self._active_revision(home, "rollback-revision")
+
+            with patch("codex_matrix.cli.Path.home", return_value=home):
+                self.assertEqual(self._resolve(cache / "0.5.12"), str(cache / "v0.5.2"))
+
+    def test_unmatched_active_revision_falls_back_to_the_enable_time_root(self):
+        """Explicit but unmatched active metadata must not run an inactive cache release."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            cache = self._cache(root, "v0.5.2", "0.5.12")
+            self._install_revision(cache / "v0.5.2", "older")
+            self._install_revision(cache / "0.5.12", "newer")
+            self._active_revision(home, "not-installed")
+
+            with patch("codex_matrix.cli.Path.home", return_value=home):
+                self.assertEqual(self._resolve(cache / "v0.5.2"), str(cache / "v0.5.2"))
+
+    def test_symlinked_root_and_marker_are_not_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = self._cache(root, "0.5.11")
+            target = self._cache(root / "targets", "0.5.99") / "0.5.99"
+            (cache / "0.5.99").symlink_to(target, target_is_directory=True)
+            marker_target = root / "marker-target.py"
+            marker_target.write_text("")
+            bad_marker = self._cache(root, "0.5.12") / "0.5.12"
+            marker = bad_marker / "packages/codex-matrix/src/codex_matrix/notify_handler.py"
+            marker.unlink()
+            marker.symlink_to(marker_target)
+
+            self.assertEqual(self._resolve(cache / "0.5.11"), str(cache / "0.5.11"))
+
+    def test_candidate_with_a_symlinked_intermediate_component_is_not_selected(self):
+        """Marker containment must reject a package tree redirected outside the cache."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = self._cache(root, "0.5.11", "0.5.12")
+            candidate = cache / "0.5.12"
+            packages = candidate / "packages"
+            external = root / "external-packages"
+            external_marker = external / "codex-matrix/src/codex_matrix"
+            external_marker.mkdir(parents=True)
+            (external_marker / "notify_handler.py").write_text("")
+            for child in packages.iterdir():
+                if child.is_dir():
+                    for nested in sorted(child.rglob("*"), reverse=True):
+                        if nested.is_file() or nested.is_symlink():
+                            nested.unlink()
+                        elif nested.is_dir():
+                            nested.rmdir()
+                    child.rmdir()
+            packages.rmdir()
+            packages.symlink_to(external, target_is_directory=True)
+
+            self.assertEqual(self._resolve(cache / "0.5.11"), str(cache / "0.5.11"))
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from matrix_bridge.session import SessionMap
 from matrix_bridge.tmux import pane_current_command, pane_for_open_file, send_keys
 
 from .bridge import CodexBridge
+from .daemon_lifecycle import remove_stale_or_owned_pid_record, write_daemon_identity
 from .transcript import (
     extract_latest_assistant_after_last_hidden_marker,
     extract_session_meta,
@@ -99,33 +100,68 @@ class CodexDaemon:
         # or turn_aborted yet), and the stall notices already posted for them.
         self._active_turns: set[str] = set()
         self._stall_notified: dict[str, float] = {}
+        self._runtime_tasks: set[asyncio.Task] = set()
+        self._start_task: asyncio.Task | None = None
+
+    def request_shutdown(self) -> None:
+        """Stop accepting work and wake all long-running runtime loops."""
+        self.running = False
+        if self._start_task is not None:
+            self._start_task.cancel()
+        for task in list(self._runtime_tasks):
+            task.cancel()
 
     async def start(self) -> None:
         """Start the daemon — runs both inbound and outbound loops."""
-        async with self.bridge:
-            async with self.poll_client:
-                try:
-                    loop = asyncio.get_event_loop()
-                    self.watcher = SessionWatcher(self._on_file_messages)
-                    self.watcher.start(loop)
+        self._start_task = asyncio.current_task()
+        try:
+            if not self.running:
+                return
+            try:
+                async with self.bridge:
+                    async with self.poll_client:
+                        try:
+                            loop = asyncio.get_event_loop()
+                            self.watcher = SessionWatcher(self._on_file_messages)
+                            self.watcher.start(loop)
 
-                    # Discover any existing active sessions
-                    await self._discover_sessions()
+                            # Discover any existing active sessions
+                            await self._discover_sessions()
 
-                    await asyncio.gather(
-                        self._matrix_poll_loop(),
-                        self._signal_watch_loop(),
-                        self._session_cleanup_loop(),
-                    )
-                finally:
-                    tasks = list(self._decoration_tasks)
-                    for task in tasks:
-                        task.cancel()
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
-                    self._active_title_tasks.clear()
-                    if self.watcher:
-                        self.watcher.stop()
+                            if not self.running:
+                                return
+
+                            runtime_tasks = {
+                                asyncio.create_task(self._matrix_poll_loop()),
+                                asyncio.create_task(self._signal_watch_loop()),
+                                asyncio.create_task(self._session_cleanup_loop()),
+                            }
+                            self._runtime_tasks.update(runtime_tasks)
+                            await asyncio.gather(*runtime_tasks)
+                        finally:
+                            runtime_tasks = list(self._runtime_tasks)
+                            for task in runtime_tasks:
+                                task.cancel()
+                            if runtime_tasks:
+                                await asyncio.gather(*runtime_tasks, return_exceptions=True)
+                            self._runtime_tasks.clear()
+                            tasks = list(self._decoration_tasks)
+                            for task in tasks:
+                                task.cancel()
+                            if tasks:
+                                await asyncio.gather(*tasks, return_exceptions=True)
+                            self._active_title_tasks.clear()
+                            if self.watcher:
+                                self.watcher.stop()
+            except asyncio.CancelledError:
+                # request_shutdown cancels this task so discovery, context
+                # entry, Matrix long-polling, and cleanup sleep all unwind.
+                # A caller cancellation while the daemon is still running is
+                # a distinct request and must remain visible to that caller.
+                if self.running:
+                    raise
+        finally:
+            self._start_task = None
 
     async def _discover_sessions(self) -> None:
         """Find and watch any active sessions on startup."""
@@ -837,8 +873,12 @@ def run_daemon():
         print("Codex daemon is already running.", file=sys.stderr)
         sys.exit(0)
 
-    pid_file = STATE_DIR / "codex-daemon.pid"
-    pid_file.write_text(str(os.getpid()))
+    try:
+        daemon_identity = write_daemon_identity(STATE_DIR)
+    except RuntimeError as error:
+        lock.release()
+        print(f"Unable to record Codex daemon identity: {error}", file=sys.stderr)
+        sys.exit(1)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -849,7 +889,7 @@ def run_daemon():
     daemon = CodexDaemon(config)
 
     def shutdown(signum, frame):
-        daemon.running = False
+        daemon.request_shutdown()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
@@ -857,7 +897,7 @@ def run_daemon():
     try:
         asyncio.run(daemon.start())
     finally:
-        pid_file.unlink(missing_ok=True)
+        remove_stale_or_owned_pid_record(STATE_DIR, daemon_identity)
         lock.release()
 
 
