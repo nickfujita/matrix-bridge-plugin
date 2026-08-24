@@ -25,6 +25,7 @@ from pathlib import Path
 
 from matrix_bridge.session import SessionMap
 from matrix_bridge.tmux import pane_for_open_file
+from .daemon_lifecycle import start_daemon
 from .transcript import (
     find_session_file,
     has_force_mirror_marker,
@@ -124,33 +125,9 @@ def handle_notify():
 
 def _ensure_daemon_running():
     """Start the Codex daemon if not already running."""
-    from filelock import FileLock, Timeout
-
-    startup_lock = FileLock(str(STATE_DIR / "codex_daemon_startup.lock"), timeout=0)
-    try:
-        startup_lock.acquire()
-    except Timeout:
-        return
-
-    try:
-        pid_file = STATE_DIR / "codex-daemon.pid"
-        if pid_file.exists():
-            pid = int(pid_file.read_text().strip())
-            try:
-                os.kill(pid, 0)
-                return  # Already running
-            except OSError:
-                pass  # Stale PID file
-
-        import subprocess
-        subprocess.Popen(
-            [sys.executable, "-m", "codex_matrix"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    finally:
-        startup_lock.release()
+    result = start_daemon(STATE_DIR, required_enabled_flag=ENABLED_FLAG)
+    if result.state == "failed":
+        logger.error("Codex daemon failed to become ready after notify: %s", result.detail)
 
 
 if __name__ == "__main__":
