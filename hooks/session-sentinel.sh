@@ -2,8 +2,8 @@
 # SessionStart sentinel — teaches the agent the two rules that only the phone
 # bridge knows about:
 #
-#   1. a turn may be read aloud on a phone, so switch to the TTS-safe skill as
-#      soon as the user hints they are mobile, and
+#   1. a turn may be read aloud on a phone, so switch to the TTS-safe skill for
+#      replies that go back out over the bridge, and
 #   2. a nested agent CLI started in the bridge-owned tmux pane silently steals
 #      that pane's session mapping (see SessionMap.register), which breaks
 #      inbound phone → terminal routing while outbound still looks healthy.
@@ -50,7 +50,7 @@ cat <<'SENTINEL'
   "suppressOutput": true,
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "Matrix phone bridge active. Use the go-mobile skill on any hint the user is mobile. Never start a nested claude/codex CLI in the bridge's tmux pane — it steals the pane's session mapping and breaks inbound routing."
+    "additionalContext": "Matrix phone bridge active. Use go-mobile only for bridge-delivered replies or an explicit /go-mobile, not for dictation typos. Never start a nested claude/codex CLI in the bridge's tmux pane — it steals the pane's session mapping and breaks inbound routing."
   }
 }
 SENTINEL

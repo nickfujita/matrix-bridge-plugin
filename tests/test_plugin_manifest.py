@@ -157,6 +157,54 @@ class SessionSentinelTests(unittest.TestCase):
             (state / "enabled").touch()
             self.assertIs(self._run(home)["suppressOutput"], True)
 
+    def test_does_not_widen_the_go_mobile_trigger(self):
+        # The sentinel used to say "on any hint the user is mobile", which
+        # overrode the narrower trigger go-mobile/SKILL.md declares for itself:
+        # a bridge-delivered reply or an explicit /go-mobile, never an inference
+        # from dictation artifacts. The skill now ships in this repo, so the two
+        # move under one version and must not contradict each other.
+        with tempfile.TemporaryDirectory() as home:
+            state = Path(home) / ".ccmatrix"
+            state.mkdir()
+            (state / "enabled").touch()
+            context = self._run(home)["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("any hint", context)
+        self.assertIn("bridge-delivered", context)
+
+
+class BundledSkillsTests(unittest.TestCase):
+    """Both harnesses load `skills/` straight from the installed plugin root."""
+
+    NAMES = ("go-mobile", "stop-mobile")
+
+    def _frontmatter(self, name):
+        text = (ROOT / "skills" / name / "SKILL.md").read_text()
+        self.assertTrue(text.startswith("---\n"), f"{name} has no frontmatter")
+        return text.split("---\n", 2)[1]
+
+    def test_each_skill_ships_a_skill_md(self):
+        for name in self.NAMES:
+            with self.subTest(skill=name):
+                self.assertTrue((ROOT / "skills" / name / "SKILL.md").is_file())
+
+    def test_frontmatter_name_matches_the_directory(self):
+        # Both Claude Code and Codex key the skill off the frontmatter `name`,
+        # so a mismatch silently publishes it under the wrong trigger.
+        for name in self.NAMES:
+            with self.subTest(skill=name):
+                self.assertIn(f"name: {name}\n", self._frontmatter(name))
+
+    def test_each_skill_declares_a_description(self):
+        for name in self.NAMES:
+            with self.subTest(skill=name):
+                self.assertIn("description:", self._frontmatter(name))
+
+    def test_go_mobile_keeps_its_narrow_trigger(self):
+        # The whole point of moving these skills next to the sentinel: the
+        # description must keep disowning dictation artifacts as a mobile hint.
+        description = self._frontmatter("go-mobile")
+        self.assertIn("NOT a mobile hint", description)
+
 
 if __name__ == "__main__":
     unittest.main()
