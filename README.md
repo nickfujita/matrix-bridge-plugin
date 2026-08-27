@@ -107,15 +107,37 @@ injection), and `ffmpeg` if you use the optional voice path.
 Slash commands: `/matrix-setup`, `/matrix-status`, `/matrix-enable`,
 `/matrix-disable`.
 
+## Skills
+
+The plugin ships two skills under `skills/`. Both are bridge concerns rather
+than development workflow, so they travel with the bridge.
+
+- **`go-mobile`** switches every later reply to a spoken, TTS-safe style, so a
+  turn read aloud on a phone stays listenable. An optional `repeat` argument
+  re-delivers the previous reply in spoken form.
+- **`stop-mobile`** ends that mode and restores normal formatting.
+
+They live here because the session sentinel below names `go-mobile` in the
+context it injects. Keeping the skill and the hook under one version stops the
+hook from widening a trigger the skill deliberately narrowed.
+
+Both harnesses read `skills/` straight from the installed plugin root, so there
+is no extra install step and nothing to copy into `~/.claude/skills` or
+`~/.codex/skills`. Claude Code picks them up from its plugin cache after
+`/plugin install`, and Codex picks them up from `~/.codex/plugins/cache/` once
+the plugin is installed from the same marketplace entry.
+
 ## Session sentinel
 
 Two rules only the bridge knows about, so the bridge teaches them. While a
 bridge is enabled, `hooks/session-sentinel.sh` injects roughly two lines of
 `SessionStart` context (~90 tokens, once per session) telling the agent to:
 
-- **switch to a spoken, TTS-safe reply style as soon as you sound mobile** —
-  dictation typos, "heading out", "going mobile", or a message that arrived
-  through the bridge — by invoking a `go-mobile` skill if one is installed, and
+- **switch to a spoken, TTS-safe reply style for replies that go back out over
+  the bridge** by invoking the bundled `go-mobile` skill. A message that
+  arrived through the bridge is a real mobile signal. Dictation artifacts and
+  typos are not, because the operator dictates at the desktop too. Any other
+  time, the operator asks for `/go-mobile` explicitly, and
 - **never start a nested `claude`/`codex` session in the bridge-owned tmux
   pane.** Only one live session may own a pane, so a nested one silently
   retires the real session's mapping: outbound messages keep flowing while
