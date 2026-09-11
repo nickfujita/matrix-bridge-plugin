@@ -67,9 +67,19 @@ def build_room_name(
     status: str = STATUS_ACTIVE,
     repo_aliases: dict[str, str] | None = None,
     branch: str | None = None,
+    title: str | None = None,
+    agent: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     """Compose the room name. Caller may pass branch explicitly to avoid re-shell."""
+    if title is None and agent and session_id:
+        from .session_title import native_title
+        title = native_title(agent, session_id)
     repo = repo_name_from_cwd(cwd, repo_aliases)
+    if title:
+        from .session_title import clean_title
+        body = f"{repo} · {clean_title(title)}"
+        return f"{status} {body}" if status else body
     if branch is None:
         branch = detect_branch(cwd)
 

@@ -52,7 +52,7 @@ async def _refresh_one_map(client: MatrixClient, map_path: Path, agent: str, ali
         status = STATUS_ACTIVE if active else STATUS_ENDED
         branch = detect_branch(cwd) if active else raw.get("last_branch")
 
-        name = build_room_name(cwd, status=status, repo_aliases=aliases, branch=branch)
+        name = build_room_name(cwd, status=status, repo_aliases=aliases, branch=branch, agent=agent, session_id=sid)
         await client.room_set_name(room_id, name)
         await client.room_set_avatar(room_id, mxc)
         if active:

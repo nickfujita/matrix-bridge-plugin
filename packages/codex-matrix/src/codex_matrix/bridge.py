@@ -14,6 +14,7 @@ from matrix_bridge.room_name import (
     detect_branch,
 )
 from matrix_bridge.session import SessionMap
+from matrix_bridge.session_title import serialized_title
 from matrix_bridge.vm import vm_letter
 
 logger = logging.getLogger(__name__)
@@ -36,11 +37,13 @@ class CodexBridge:
     async def __aexit__(self, *args):
         await self.bot_client.__aexit__(*args)
 
+    @serialized_title("codex")
     async def create_room(self, session_id: str, cwd: str) -> str | None:
         """Create a new Matrix room for a Codex session."""
         branch = detect_branch(cwd)
         name = build_room_name(
             cwd, status=STATUS_ACTIVE,
+            agent="codex", session_id=session_id,
             repo_aliases=self.config.repo_aliases, branch=branch,
         )
 
@@ -57,12 +60,14 @@ class CodexBridge:
                 await self.bot_client.room_set_avatar(room_id, mxc)
             self.session_map.set_room_id(session_id, room_id)
             self.session_map.set_last_branch(session_id, branch)
+            self.session_map.set_last_room_name(session_id, name)
             logger.info(f"Created Codex room {room_id} for session {session_id}")
             return room_id
 
         logger.error(f"Failed to create room for Codex session {session_id}")
         return None
 
+    @serialized_title("codex")
     async def refresh_branch_if_changed(self, session_id: str) -> bool | None:
         """Update the room name when its git branch has changed.
 
@@ -78,11 +83,16 @@ class CodexBridge:
             return True
         name = build_room_name(
             entry.cwd, status=STATUS_ACTIVE,
+            agent="codex", session_id=session_id,
             repo_aliases=self.config.repo_aliases, branch=current,
         )
+        if getattr(entry, "last_room_name", None) == name:
+            self.session_map.set_last_branch(session_id, current)
+            return True
         renamed = await self.bot_client.room_set_name(entry.room_id, name)
         if not renamed:
             return False
+        self.session_map.set_last_room_name(session_id, name)
         self.session_map.set_last_branch(session_id, current)
         logger.info(f"Renamed Codex room for {session_id}: branch {entry.last_branch} → {current}")
         return True
@@ -167,6 +177,7 @@ class CodexBridge:
                 typing=typing, timeout=timeout,
             )
 
+    @serialized_title("codex")
     async def mark_session_active(self, session_id: str) -> bool:
         """Update the room name to active status using the current branch.
 
@@ -180,11 +191,13 @@ class CodexBridge:
         current = detect_branch(entry.cwd)
         name = build_room_name(
             entry.cwd, status=STATUS_ACTIVE,
+            agent="codex", session_id=session_id,
             repo_aliases=self.config.repo_aliases, branch=current,
         )
         renamed = await self.bot_client.room_set_name(entry.room_id, name)
         if not renamed:
             return False
+        self.session_map.set_last_room_name(session_id, name)
         self.session_map.set_last_branch(session_id, current)
         # The title no longer carries the ended marker. Recording that is what
         # lets a resumed session's room lose its red dot: nothing else in the
@@ -192,6 +205,7 @@ class CodexBridge:
         self.session_map.set_room_marked_ended(session_id, False)
         return True
 
+    @serialized_title("codex")
     async def mark_session_ended(self, session_id: str) -> bool:
         """Update room name to ended status.
 
@@ -203,10 +217,12 @@ class CodexBridge:
             return False
         name = build_room_name(
             entry.cwd, status=STATUS_ENDED,
+            agent="codex", session_id=session_id,
             repo_aliases=self.config.repo_aliases, branch=entry.last_branch,
         )
         renamed = await self.bot_client.room_set_name(entry.room_id, name)
         if not renamed:
             return False
+        self.session_map.set_last_room_name(session_id, name)
         self.session_map.set_room_marked_ended(session_id, True)
         return True
