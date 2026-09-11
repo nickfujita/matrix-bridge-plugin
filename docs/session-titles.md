@@ -101,3 +101,12 @@ PYTHONPATH=packages/antigravity-matrix/src uv run pytest tests
 The title tests mock Matrix and use temporary native metadata files. Live
 verification should use a separate tmux server and disabled bridge hooks so a
 fixture cannot create a room or send a notification.
+
+Matrix repository aliases are optional local settings in `~/.ccmatrix/config.json`.
+Add a `repo_aliases` object alongside the existing settings, for example
+`"repo_aliases": {"long-project-name": "short"}`. Keys match the repository name
+from its origin remote, or its root folder when no origin exists. Unmapped
+repositories keep their full name. Outside Git, rooms show only the task title,
+or `Agent session` until a title is available. These aliases do not affect tmux.
+Restart the Matrix daemons and `session-titles.service` after editing aliases.
+Never commit your local configuration, which also contains credentials.

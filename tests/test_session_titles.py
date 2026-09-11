@@ -78,6 +78,23 @@ class NativeTitles(unittest.TestCase):
             self.assertEqual(build_room_name("/old/main", title="Fix hibernation", status=STATUS_ENDED), f"{STATUS_ENDED} repo · Fix hibernation")
             git.assert_not_called()
 
+    def test_local_alias_and_non_git_room_names(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(build_room_name(root, title="Plan work"), "Plan work")
+            self.assertEqual(build_room_name(root), "Agent session")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            child = root / "subdirectory"
+            child.mkdir()
+            self.assertEqual(build_room_name(child, title="Plan work"), f"{root.name} · Plan work")
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "https://example.com/team/long-project-name.git"], check=True)
+            self.assertEqual(build_room_name(child, title="Plan work"), "long-project-name · Plan work")
+            self.assertEqual(build_room_name(child, title="Plan work",
+                             repo_aliases={"long-project-name": "short"}), "short · Plan work")
+            self.assertEqual(build_room_name("", title="Plan work", status=STATUS_ENDED),
+                             f"{STATUS_ENDED} Plan work")
+
     def test_control_characters_are_removed(self):
         self.assertEqual(clean_title("a\n\tb\x1b\u200bc"), "a b c")
         self.assertEqual(len(clean_title("x" * 200)), 120)
