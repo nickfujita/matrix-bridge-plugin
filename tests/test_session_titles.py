@@ -138,7 +138,7 @@ class TitleReconciliation(unittest.IsolatedAsyncioTestCase):
         other.register("newer", "%4", "/old/main")
         with patch("matrix_bridge.session_title.session_maps", return_value=[("codex", self.smap), ("claude", other)]), patch("matrix_bridge.session_title.tmux_title", return_value=True) as tmux:
             await self.sync.sync(immediate=True)
-            tmux.assert_called_once_with("%4", "claude", "newer", self.title)
+            tmux.assert_called_once_with("%4", "claude", "newer", self.title, "/old/main")
 
     async def test_matrix_outage_does_not_block_tmux(self):
         self.client.room_set_name.side_effect = OSError("offline")
@@ -170,7 +170,8 @@ class TmuxTitleIntegration(unittest.TestCase):
             tm("set-option", "-w", "automatic-rename-format", "#{@session_title}")
             tm("set-option", "-w", "automatic-rename", "on")
             with patch.dict(os.environ, {"TMUX": sock + ",0,0"}):
-                self.assertTrue(tmux_title(pane, "sleep", "fixture", "First topic"))
+                self.assertTrue(tmux_title(pane, "sleep", "fixture", "First topic", "/tmp/worktree"))
+                self.assertEqual(tm("display-message", "-p", "#{@session_repo} | #{@session_title}"), "worktree | First topic")
                 expect_name("First topic")
                 title = "Literal #{window_id} #(echo not-executed)"
                 self.assertTrue(tmux_title(pane, "sleep", "fixture", title))

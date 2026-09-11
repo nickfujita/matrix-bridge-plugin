@@ -82,12 +82,13 @@ def main():
     # title text. Manual rename-window keeps tmux's normal per-window override.
     is_agent = "#{||:#{==:#{pane_current_command},codex},#{==:#{pane_current_command},claude}}"
     title = "#{?@session_title,#{@session_title},#{pane_title}}"
+    repo = "#{?@session_repo,#{@session_repo},#{b:pane_current_path}}"
     short = "#{?@session_title,#{=/28/…:@session_title},#{=/28/…:pane_title}}"
     section(USER_HOME / ".tmux.conf.local", f'''
 set -gw automatic-rename on
 set -gw automatic-rename-format '#{{?{is_agent},{short},#{{pane_current_command}}}}'
 set -g status-right-length 80
-set -g status-right ' #[fg=#dba3c4]#{{?{is_agent},{title},#{{pane_current_path}}}} '
+set -g status-right ' #[fg=#dba3c4]#{{?{is_agent},{repo} #[fg=#666666]| #[fg=#dba3c4]{title},#{{pane_current_path}}}} '
 ''')
     section(USER_HOME / ".codex/AGENTS.md", '''
 ## Session titles

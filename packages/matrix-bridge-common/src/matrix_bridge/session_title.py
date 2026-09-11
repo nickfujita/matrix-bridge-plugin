@@ -262,21 +262,23 @@ def resolve_session(agent: str | None, session_id: str | None) -> tuple[str, str
     return matches[0]
 
 
-def tmux_title(pane: str, agent: str, session_id: str, title: str) -> bool:
+def tmux_title(pane: str, agent: str, session_id: str, title: str, cwd: str = "") -> bool:
     """Write plain pane options; never feed title text to a shell or tmux eval."""
     if not pane.startswith("%") or not pane[1:].isdigit():
         return False
+    from .room_name import repo_name_from_cwd
+    repo = clean_title(repo_name_from_cwd(cwd)) if cwd else ""
     try:
         result = subprocess.run(["tmux", "display-message", "-p", "-t", pane,
-                                 "#{pane_current_command}\t#{automatic-rename}\t#{@session_title_owner}\t#{@session_title}"],
+                                 "#{pane_current_command}\t#{automatic-rename}\t#{@session_title_owner}\t#{@session_title}\t#{@session_repo}"],
                                 capture_output=True, text=True, timeout=2)
         command, _, saved = result.stdout.rstrip("\n").partition("\t")
         if result.returncode or command != agent:
             return False
         automatic, _, saved = saved.partition("\t")
-        if saved == f"{agent}:{session_id}\t{title}":
+        if saved == f"{agent}:{session_id}\t{title}\t{repo}":
             return True
-        for option, value in (("@session_title", title), ("@session_title_owner", f"{agent}:{session_id}")):
+        for option, value in (("@session_title", title), ("@session_title_owner", f"{agent}:{session_id}"), ("@session_repo", repo)):
             subprocess.run(["tmux", "set-option", "-p", "-t", pane, option, value],
                            check=True, capture_output=True, timeout=2)
         # A user-option change alone does not schedule tmux's name recalculation.
@@ -315,8 +317,10 @@ class TitleSync:
                     owns_pane = owner and owner[0] == agent and owner[1].session_id == entry.session_id
                     if not title:
                         if owns_pane:
-                            self.panes.pop(entry.tmux_pane, None)
-                            await asyncio.to_thread(clear_tmux_title, entry.tmux_pane)
+                            if await asyncio.to_thread(tmux_title, entry.tmux_pane, agent, entry.session_id, "", entry.cwd):
+                                self.panes[entry.tmux_pane] = ((agent, entry.session_id), "")
+                            else:
+                                await asyncio.to_thread(clear_tmux_title, entry.tmux_pane)
                         continue
                     key = (agent, entry.session_id)
                     # Two identical observations coalesce partial/rapid metadata updates.
@@ -325,7 +329,7 @@ class TitleSync:
                     if not ready:
                         continue
                     if owns_pane:
-                        if await asyncio.to_thread(tmux_title, entry.tmux_pane, agent, entry.session_id, title):
+                        if await asyncio.to_thread(tmux_title, entry.tmux_pane, agent, entry.session_id, title, entry.cwd):
                             self.panes[entry.tmux_pane] = (key, title)
                         else:
                             await asyncio.to_thread(clear_tmux_title, entry.tmux_pane)
@@ -363,7 +367,7 @@ class TitleSync:
 def clear_tmux_title(pane: str):
     if not pane.startswith("%") or not pane[1:].isdigit():
         return
-    for option in ("@session_title", "@session_title_owner"):
+    for option in ("@session_title", "@session_title_owner", "@session_repo"):
         try:
             subprocess.run(["tmux", "set-option", "-pu", "-t", pane, option],
                            capture_output=True, timeout=2)
