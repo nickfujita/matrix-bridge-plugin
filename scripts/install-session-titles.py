@@ -88,7 +88,7 @@ def main():
 set -gw automatic-rename on
 set -gw automatic-rename-format '#{{?{is_agent},{short},#{{pane_current_command}}}}'
 set -g status-right-length 80
-set -g status-right ' #[fg=#dba3c4]#{{?{is_agent},{repo} #[fg=#666666]| #[fg=#dba3c4]{title},#{{pane_current_path}}}} '
+set -g status-right ' #[fg=#dba3c4]#{{?{is_agent},{title} #[fg=#666666]| #[fg=#dba3a2]{repo},#{{pane_current_path}}}} '
 ''')
     section(USER_HOME / ".codex/AGENTS.md", '''
 ## Session titles

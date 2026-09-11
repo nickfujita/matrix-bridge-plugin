@@ -45,7 +45,7 @@ are rejected, but a Claude subagent inheriting its parent's environment must obe
 the instruction not to rename its parent.
 
 The tmux window list shows a shortened title. The right side shows the active
-`repository | task title` with more space. The repository comes from the Git
+`task title | repository` with more space. The repository comes from the Git
 remote, with the folder name as a fallback. A manual tmux window rename disables automatic naming for
 that window, as usual. To follow the chat title again, run this in that window:
 
