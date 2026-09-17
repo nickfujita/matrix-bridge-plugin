@@ -11,7 +11,11 @@ dependencies = [
     "markdown>=3.5",
     "pillow>=10.0",
     "pykakasi>=2.3.0",
+    "claude-agent-sdk>=0.2.152,<0.3",
 ]
+
+[project.scripts]
+session-title = "matrix_bridge.session_title:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/matrix_bridge"]

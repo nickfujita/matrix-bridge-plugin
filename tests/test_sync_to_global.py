@@ -71,7 +71,9 @@ class SyncToGlobalTests(unittest.TestCase):
             self.assertTrue(entry["gitCommitSha"])
             self.assertIn("lastUpdated", entry)
 
-            self.assertIn(f"run --project {cache_path} codex-matrix enable", uv_log.read_text())
+            commands = uv_log.read_text().splitlines()
+            self.assertEqual(commands[0], f"sync --all-packages --project {cache_path}")
+            self.assertIn(f"run --no-sync --project {cache_path} codex-matrix enable", commands)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from matrix_bridge.room_name import (
     detect_branch,
 )
 from matrix_bridge.session import SessionMap
+from matrix_bridge.session_title import serialized_title
 from matrix_bridge.vm import vm_letter
 
 logger = logging.getLogger(__name__)
@@ -37,11 +38,13 @@ class MatrixBridge:
     async def __aexit__(self, *args):
         await self.bot_client.__aexit__(*args)
 
+    @serialized_title("claude")
     async def create_room(self, session_id: str, cwd: str) -> str | None:
         """Create a new Matrix room for a session. Returns room ID."""
         branch = detect_branch(cwd)
         name = build_room_name(
             cwd, status=STATUS_ACTIVE,
+            agent="claude", session_id=session_id,
             repo_aliases=self.config.repo_aliases, branch=branch,
         )
 
@@ -58,12 +61,14 @@ class MatrixBridge:
                 await self.bot_client.room_set_avatar(room_id, mxc)
             self.session_map.set_room_id(session_id, room_id)
             self.session_map.set_last_branch(session_id, branch)
+            self.session_map.set_last_room_name(session_id, name)
             logger.info(f"Created room {room_id} for session {session_id}")
             return room_id
 
         logger.error(f"Failed to create room for session {session_id}")
         return None
 
+    @serialized_title("claude")
     async def update_room_status(self, session_id: str, status: str) -> None:
         """Update the room name to reflect current status."""
         entry = self.session_map.get(session_id)
@@ -73,12 +78,16 @@ class MatrixBridge:
         branch = detect_branch(entry.cwd) if status == STATUS_ACTIVE else entry.last_branch
         name = build_room_name(
             entry.cwd, status=status,
+            agent="claude", session_id=session_id,
             repo_aliases=self.config.repo_aliases, branch=branch,
         )
-        await self.bot_client.room_set_name(entry.room_id, name)
+        if not await self.bot_client.room_set_name(entry.room_id, name):
+            return
+        self.session_map.set_last_room_name(session_id, name)
         if status == STATUS_ACTIVE:
             self.session_map.set_last_branch(session_id, branch)
 
+    @serialized_title("claude")
     async def refresh_branch_if_changed(self, session_id: str) -> None:
         """Update the room name when the git branch has changed since last check."""
         entry = self.session_map.get(session_id)
@@ -89,9 +98,15 @@ class MatrixBridge:
             return
         name = build_room_name(
             entry.cwd, status=STATUS_ACTIVE,
+            agent="claude", session_id=session_id,
             repo_aliases=self.config.repo_aliases, branch=current,
         )
-        await self.bot_client.room_set_name(entry.room_id, name)
+        if getattr(entry, "last_room_name", None) == name:
+            self.session_map.set_last_branch(session_id, current)
+            return
+        if not await self.bot_client.room_set_name(entry.room_id, name):
+            return
+        self.session_map.set_last_room_name(session_id, name)
         self.session_map.set_last_branch(session_id, current)
         logger.info(f"Renamed room for {session_id}: branch {entry.last_branch} → {current}")
 

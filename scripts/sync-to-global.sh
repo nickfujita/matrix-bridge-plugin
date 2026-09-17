@@ -131,15 +131,15 @@ restart_claude_daemon() {
   fi
   rm -f "$pid_file"
 
-  (cd "$CACHE_PATH" && uv run python -m claude_code_matrix.daemon >/dev/null 2>&1 &)
+  (cd "$CACHE_PATH" && uv run --no-sync python -m claude_code_matrix.daemon >/dev/null 2>&1 &)
 }
 
 run_codex_enable() {
-  uv run --project "$CACHE_PATH" codex-matrix enable
+  uv run --no-sync --project "$CACHE_PATH" codex-matrix enable
 }
 
 run_refresh_rooms() {
-  uv run --project "$CACHE_PATH/packages/matrix-bridge-common" \
+  uv run --no-sync --project "$CACHE_PATH/packages/matrix-bridge-common" \
     python -m matrix_bridge.tools.refresh_rooms
 }
 
@@ -158,6 +158,10 @@ fi
 
 copy_repo
 update_installed_plugins
+
+# Build the shared environment once before either daemon starts. Concurrent
+# `uv run` syncs can remove each other's dist-info during a package upgrade.
+uv sync --all-packages --project "$CACHE_PATH"
 
 if [[ "$restart_daemon" == "true" ]]; then
   restart_claude_daemon

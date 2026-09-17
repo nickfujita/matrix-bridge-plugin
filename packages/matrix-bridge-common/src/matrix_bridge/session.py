@@ -30,6 +30,7 @@ class SessionEntry:
     # often same-pane succession below, which is the normal way an interactive
     # session ends. A reconciler compares the two and repairs the title.
     room_marked_ended: bool = False
+    last_room_name: str | None = None
 
 
 class SessionMap:
@@ -126,6 +127,14 @@ class SessionMap:
             data = self._load()
             if session_id in data:
                 data[session_id]["room_marked_ended"] = marked
+                self._save(data)
+
+    def set_last_room_name(self, session_id: str, name: str) -> None:
+        """Record the display name only after Matrix acknowledges it."""
+        with self.lock:
+            data = self._load()
+            if session_id in data:
+                data[session_id]["last_room_name"] = name
                 self._save(data)
 
     def set_last_branch(self, session_id: str, branch: str | None) -> None:
