@@ -1,0 +1,36 @@
+{
+  "name": "matrix-bridge-plugin",
+  "version": "0.8.0",
+  "description": "Self-hosted Matrix bridge for AI coding CLIs — privacy-first voice and text chat from your phone",
+  "author": {
+    "name": "nickfujita",
+    "url": "https://github.com/nickfujita"
+  },
+  "homepage": "https://github.com/nickfujita/matrix-bridge-plugin",
+  "repository": "https://github.com/nickfujita/matrix-bridge-plugin",
+  "license": "MIT",
+  "keywords": [
+    "matrix",
+    "bridge",
+    "voice",
+    "mobile",
+    "self-hosted"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Matrix Bridge",
+    "shortDescription": "Mirror each coding session into a Matrix room and chat back from your phone",
+    "longDescription": "One Matrix room per session on your own homeserver. Assistant messages, tool activity, and completion notifications are forwarded in near real time; replies from any Matrix client are injected into the running CLI through tmux. Optional voice replies, per-machine avatars, and session titles shared with tmux.",
+    "developerName": "nickfujita",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Go mobile: switch replies to a spoken style.",
+      "Stop mobile: back to normal replies."
+    ]
+  }
+}

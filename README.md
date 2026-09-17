@@ -96,8 +96,11 @@ codex plugin marketplace add nickfujita/matrix-bridge-plugin
 codex plugin add matrix-bridge-plugin@matrix-bridge-plugin
 ```
 
-Each harness keeps its own copy under its plugin cache and runs its own
-daemon from it. Then configure it:
+Each harness has its own manifest in this repo — `.claude-plugin/` for Claude
+Code, `.agents/plugins/marketplace.json` and `.codex-plugin/` for Codex — both
+pointing at the repo root, so the same `hooks/`, `skills/`, and packages ship
+to both. Each harness keeps its own copy under its plugin cache and runs its
+own daemon from it. Then configure it:
 
 ```
 /matrix-setup
@@ -144,7 +147,11 @@ codex plugin add matrix-bridge-plugin@matrix-bridge-plugin
 
 Then run `codex-matrix enable` once more so the Codex notify script resolves the
 plugin under its new cache directory, and restart the bridge daemons and any
-`session-title watch` service. `~/.ccmatrix/` state, room mappings, and your
+`session-title watch` service. Codex now installs from the repo's own
+`.agents/plugins/marketplace.json` instead of reading the Claude manifest
+through its compatibility path, so the auto-migrated `source-command-matrix-*`
+skills disappear; the `/matrix-*` commands are Claude Code flows, and the Codex
+bridge is managed with `codex-matrix enable|disable|status` as before. `~/.ccmatrix/` state, room mappings, and your
 configuration are untouched by the rename. Skills move with the plugin name:
 `/claude-code-matrix:go-mobile` becomes `/matrix-bridge-plugin:go-mobile`.
 

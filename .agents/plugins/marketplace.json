@@ -1,0 +1,21 @@
+{
+  "name": "matrix-bridge-plugin",
+  "interface": {
+    "displayName": "Matrix Bridge"
+  },
+  "plugins": [
+    {
+      "name": "matrix-bridge-plugin",
+      "version": "0.8.0",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
