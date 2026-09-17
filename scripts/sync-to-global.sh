@@ -46,8 +46,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
-PLUGIN_ID="claude-code-matrix@claude-code-matrix"
-CACHE_ROOT="$CLAUDE_HOME/plugins/cache/claude-code-matrix/claude-code-matrix"
+PLUGIN_ID="matrix-bridge-plugin@matrix-bridge-plugin"
+CACHE_ROOT="$CLAUDE_HOME/plugins/cache/matrix-bridge-plugin/matrix-bridge-plugin"
 INSTALL_FILE="$CLAUDE_HOME/plugins/installed_plugins.json"
 
 VERSION="$(

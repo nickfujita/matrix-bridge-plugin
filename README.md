@@ -5,7 +5,8 @@ session into a room on *your own* Matrix homeserver, so you can watch progress
 and chat back — from your phone, a tablet, or any Matrix client — while the
 agent keeps working on your machine.
 
-One plugin, three framework variants in this repo:
+One plugin, `matrix-bridge-plugin`, installed on each harness from the same
+marketplace entry, with three framework variants as packages in this repo:
 
 - **claude-code-matrix** — for [Claude Code](https://claude.com/claude-code)
 - **codex-matrix** — for Codex CLI
@@ -79,14 +80,24 @@ If you don't deploy voicehub + voice-server, everything text still works; the
 
 ## Install
 
-This is a Claude Code plugin distributed via a plugin marketplace.
+The plugin is distributed through this repo's plugin marketplace. Both
+harnesses read the same manifest, so install it on each one you use. Claude
+Code:
 
 ```
 /plugin marketplace add nickfujita/matrix-bridge-plugin
-/plugin install claude-code-matrix
+/plugin install matrix-bridge-plugin
 ```
 
-Then configure it:
+Codex:
+
+```bash
+codex plugin marketplace add nickfujita/matrix-bridge-plugin
+codex plugin add matrix-bridge-plugin@matrix-bridge-plugin
+```
+
+Each harness keeps its own copy under its plugin cache and runs its own
+daemon from it. Then configure it:
 
 ```
 /matrix-setup
@@ -106,6 +117,36 @@ injection), and `ffmpeg` if you use the optional voice path.
 
 Slash commands: `/matrix-setup`, `/matrix-status`, `/matrix-enable`,
 `/matrix-disable`.
+
+## Upgrading from `claude-code-matrix`
+
+Releases before 0.8.0 registered the plugin and its marketplace as
+`claude-code-matrix`, the name of the Claude Code variant package. Both are now
+`matrix-bridge-plugin`, the name of this repo, and a plugin manager treats that
+as a different plugin: remove the old one and install the new one on each
+harness.
+
+```
+# Claude Code
+/plugin uninstall claude-code-matrix@claude-code-matrix
+/plugin marketplace remove claude-code-matrix
+/plugin marketplace add nickfujita/matrix-bridge-plugin
+/plugin install matrix-bridge-plugin
+```
+
+```bash
+# Codex
+codex plugin remove claude-code-matrix@claude-code-matrix
+codex plugin marketplace remove claude-code-matrix
+codex plugin marketplace add nickfujita/matrix-bridge-plugin
+codex plugin add matrix-bridge-plugin@matrix-bridge-plugin
+```
+
+Then run `codex-matrix enable` once more so the Codex notify script resolves the
+plugin under its new cache directory, and restart the bridge daemons and any
+`session-title watch` service. `~/.ccmatrix/` state, room mappings, and your
+configuration are untouched by the rename. Skills move with the plugin name:
+`/claude-code-matrix:go-mobile` becomes `/matrix-bridge-plugin:go-mobile`.
 
 ## Skills
 
@@ -161,7 +202,7 @@ only lever. The rules stay identical on both harnesses; only the prose is cut.
 it applies to every hook in the file. Install this plugin under Codex as well
 and Codex will happily run the *Claude* handlers too — it records them in
 `~/.codex/config.toml` as
-`hooks.state."claude-code-matrix@claude-code-matrix:hooks/hooks.json:<event>:i:j"`
+`hooks.state."matrix-bridge-plugin@matrix-bridge-plugin:hooks/hooks.json:<event>:i:j"`
 — handing them a payload whose `session_id` is a Codex thread id. Left
 unchecked, every Codex session got a second, Claude-avatar room on top of the
 one the Codex bridge already made: two rooms, two notifications and two spoken
