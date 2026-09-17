@@ -543,7 +543,7 @@ _VERSION_DIR_RE = re.compile(r"^v?\d+(\.\d+)+$")
 # Relative path that proves a candidate directory really is a plugin checkout.
 _PLUGIN_MARKER = "packages/codex-matrix/src/codex_matrix/notify_handler.py"
 _PLUGIN_MANIFEST = ".claude-plugin/plugin.json"
-_PLUGIN_NAME = "claude-code-matrix"
+_PLUGIN_NAME = "matrix-bridge-plugin"
 _PLUGIN_INSTALL_METADATA = ".codex-marketplace-install.json"
 
 
@@ -558,7 +558,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-NAME = "claude-code-matrix"
+NAME = "matrix-bridge-plugin"
 MARKER = Path("packages/codex-matrix/src/codex_matrix/notify_handler.py")
 MANIFEST = Path(".claude-plugin/plugin.json")
 INSTALL_METADATA = Path(".codex-marketplace-install.json")
@@ -684,8 +684,8 @@ def _codex_plugin_cache() -> Path:
         / ".codex"
         / "plugins"
         / "cache"
-        / "claude-code-matrix"
-        / "claude-code-matrix"
+        / "matrix-bridge-plugin"
+        / "matrix-bridge-plugin"
     )
 
 

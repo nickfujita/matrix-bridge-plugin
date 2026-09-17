@@ -46,7 +46,7 @@ class SyncToGlobalTests(unittest.TestCase):
             version = json.loads((REPO_ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
             installed = home / ".claude" / "plugins" / "installed_plugins.json"
             installed.parent.mkdir(parents=True)
-            installed.write_text(json.dumps({"plugins": {"claude-code-matrix@claude-code-matrix": [{}]}}))
+            installed.write_text(json.dumps({"plugins": {"matrix-bridge-plugin@matrix-bridge-plugin": [{}]}}))
 
             result = subprocess.run(
                 ["bash", "scripts/sync-to-global.sh", "--no-restart", "--no-refresh-rooms"],
@@ -60,12 +60,12 @@ class SyncToGlobalTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("DeprecationWarning", result.stderr)
 
-            cache_path = home / ".claude" / "plugins" / "cache" / "claude-code-matrix" / "claude-code-matrix" / version
+            cache_path = home / ".claude" / "plugins" / "cache" / "matrix-bridge-plugin" / "matrix-bridge-plugin" / version
             self.assertTrue((cache_path / ".claude-plugin" / "plugin.json").exists())
             self.assertFalse((cache_path / ".git").exists())
 
             data = json.loads(installed.read_text())
-            entry = data["plugins"]["claude-code-matrix@claude-code-matrix"][0]
+            entry = data["plugins"]["matrix-bridge-plugin@matrix-bridge-plugin"][0]
             self.assertEqual(entry["installPath"], str(cache_path))
             self.assertEqual(entry["version"], version)
             self.assertTrue(entry["gitCommitSha"])

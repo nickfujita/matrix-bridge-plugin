@@ -626,7 +626,7 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
         self.addCleanup(self._home_patch.stop)
 
     def _cache(self, root: Path, *versions: str) -> Path:
-        cache = root / "cache" / "claude-code-matrix"
+        cache = root / "cache" / "matrix-bridge-plugin"
         for version in versions:
             marker = (
                 cache / version / "packages" / "codex-matrix" / "src" / "codex_matrix"
@@ -636,7 +636,7 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
             manifest = cache / version / ".claude-plugin"
             manifest.mkdir()
             (manifest / "plugin.json").write_text(
-                json.dumps({"name": "claude-code-matrix", "version": version})
+                json.dumps({"name": "matrix-bridge-plugin", "version": version})
             )
         return cache
 
@@ -651,7 +651,7 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
         config_dir = home / ".codex"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "config.toml").write_text(
-            "[marketplaces.claude-code-matrix]\n"
+            "[marketplaces.matrix-bridge-plugin]\n"
             f'last_revision = "{revision}"\n'
         )
 
@@ -717,7 +717,7 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
             checkout.mkdir()
             active = (
                 home
-                / ".codex/plugins/cache/claude-code-matrix/claude-code-matrix/0.5.11"
+                / ".codex/plugins/cache/matrix-bridge-plugin/matrix-bridge-plugin/0.5.11"
             )
             marker = active / "packages/codex-matrix/src/codex_matrix/notify_handler.py"
             marker.parent.mkdir(parents=True)
@@ -725,7 +725,7 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
             manifest = active / ".claude-plugin"
             manifest.mkdir()
             (manifest / "plugin.json").write_text(
-                json.dumps({"name": "claude-code-matrix", "version": "0.5.11"})
+                json.dumps({"name": "matrix-bridge-plugin", "version": "0.5.11"})
             )
 
             with patch("codex_matrix.cli.Path.home", return_value=home):
@@ -735,7 +735,7 @@ class NotifyScriptVersionResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = self._cache(Path(tmp), "0.5.11", "0.5.12")
             (cache / "0.5.12/.claude-plugin/plugin.json").write_text(
-                json.dumps({"name": "claude-code-matrix", "version": "0.5.11"})
+                json.dumps({"name": "matrix-bridge-plugin", "version": "0.5.11"})
             )
 
             self.assertEqual(self._resolve(cache / "0.5.11"), str(cache / "0.5.11"))
