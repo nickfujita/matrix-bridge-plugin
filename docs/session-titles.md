@@ -1,25 +1,38 @@
 # Use chat titles in tmux and Matrix
 
-Install from a durable checkout on each Linux VM with tmux, uv, and a running
-systemd user manager. Configure the existing Matrix bridge first if you want
-room names synchronized.
+The plugin ships the `session-title` command and the `watch` loop that mirrors a
+Claude Code or Codex session's native title into tmux window options and Matrix
+room names. It does not install anything on the box. Box personalization —
+the tmux formats, the `~/.local/bin/session-title` wrapper, the
+`session-titles.service` user service, the Codex terminal-title setting, and
+the agent instruction that names sessions — belongs to
+[box-bootstrap](https://github.com/nickfujita/box-bootstrap):
 
 ```sh
-scripts/sync-to-global.sh --no-refresh-rooms
-uv run scripts/install-session-titles.py --adopt-windows
+./install.sh --session-titles          # wrapper, service, tmux formats, Codex setting
+./install.sh --global-instructions     # the naming policy in ~/.codex/AGENTS.md
 ```
 
-The first command installs the updated bridge naming functions. The second
-installs `~/.local/bin/session-title`, the `session-titles.service` user service,
-tmux formats, the Codex terminal-title setting, and a managed section in
-`~/.codex/AGENTS.md`. Claude Code must import that file in its global `CLAUDE.md`,
-as the operator's shared setup already does. The installer backs up changed
-files. Keep the checkout in place because the command wrapper runs its code.
+Both are also part of `./install.sh --agents`. The wrapper resolves the plugin
+root from `~/.claude/plugins/installed_plugins.json` on every call, so a plugin
+update moves the command and the service with it.
 
-`--adopt-windows` enables automatic names for existing windows whose foreground
-command is `codex` or `claude`. It records their previous names in
-`~/.ccmatrix/tmux-windows-before-titles-*.tsv`. Omit the flag on subsequent installs
-to preserve manual window-name overrides.
+## What a box needs
+
+Without box-bootstrap, provide the same five pieces by hand:
+
+1. A `session-title` command on `PATH` that runs
+   `uv run --no-sync --quiet --project <plugin root> session-title "$@"`.
+2. A user service running `session-title watch`, restarted on failure.
+3. tmux formats that name agent windows from `@session_title` and show
+   `@session_title | @session_repo` on the right. box-bootstrap's copy is
+   `dotfiles/tmux/session-titles.conf`.
+4. `[tui] terminal_title = ["thread"]` in `~/.codex/config.toml`, so Codex
+   publishes its thread name.
+5. The naming policy in the agent's global instructions — box-bootstrap's copy
+   is the `## Session titles` section of `dotfiles/codex/AGENTS.md.template`.
+
+## Naming sessions
 
 Use a short name for the overall task:
 
@@ -44,10 +57,13 @@ not an automatic classifier. Codex subagent targets and Claude sidechain targets
 are rejected, but a Claude subagent inheriting its parent's environment must obey
 the instruction not to rename its parent.
 
+## What the watcher does
+
 The tmux window list shows a shortened title. The right side shows the active
 `task title | repository` with more space. The repository comes from the Git
-remote, with the folder name as a fallback. A manual tmux window rename disables automatic naming for
-that window, as usual. To follow the chat title again, run this in that window:
+remote, with the folder name as a fallback. A manual tmux window rename disables
+automatic naming for that window, as usual. To follow the chat title again, run
+this in that window:
 
 ```sh
 tmux set-option -w automatic-rename on
@@ -69,14 +85,15 @@ names and renames use the official Python Agent SDK. The helper also queues a
 pending Claude rename. A `UserPromptSubmit` or `SessionStart` hook returns it as
 `sessionTitle`, making the live CLI adopt it instead of reappending a cached old
 name. tmux and Matrix show the pending name immediately, subject to the watcher's
-debounce. A different native rename supersedes the pending request. These adapters currently
-support Codex's local session index and Claude's JSONL session store. An existing
-private Codex TUI can retain its cached label until it refreshes metadata. Claude's
-prompt adopts the name on the next submitted prompt or resume. Restart existing
-Claude sessions once to load the new plugin hooks. Existing sessions also need
-to reload their global instructions before the naming policy reaches the model.
+debounce. A different native rename supersedes the pending request. These
+adapters currently support Codex's local session index and Claude's JSONL
+session store. An existing private Codex TUI can retain its cached label until
+it refreshes metadata. Claude's prompt adopts the name on the next submitted
+prompt or resume. Restart existing Claude sessions once to load the new plugin
+hooks. Existing sessions also need to reload their global instructions before
+the naming policy reaches the model.
 
-The user service targets the default tmux server on this VM. Separate named tmux
+The service targets the default tmux server on this VM. Separate named tmux
 servers need their own configuration and session mapping; the bridge's existing
 pane IDs do not identify a tmux server. Do not share those maps between servers.
 
@@ -88,9 +105,9 @@ journalctl --user -u session-titles.service -n 30
 ```
 
 To stop synchronization, run `systemctl --user disable --now session-titles.service`.
-Restore the backed-up configuration files to undo the display and instruction
-changes. The installer does not alter Claude's terminal-title settings. Native
-titles continue to work if the Matrix server is unavailable.
+Native titles continue to work if the Matrix server is unavailable.
+
+## Tests
 
 Run the offline tests with the existing Antigravity package on the Python path:
 
@@ -101,6 +118,8 @@ PYTHONPATH=packages/antigravity-matrix/src uv run pytest tests
 The title tests mock Matrix and use temporary native metadata files. Live
 verification should use a separate tmux server and disabled bridge hooks so a
 fixture cannot create a room or send a notification.
+
+## Repository aliases
 
 Matrix repository aliases are optional local settings in `~/.ccmatrix/config.json`.
 Add a `repo_aliases` object alongside the existing settings, for example
