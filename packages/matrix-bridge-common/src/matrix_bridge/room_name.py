@@ -49,6 +49,22 @@ def _detect_repo_from_origin(cwd: str | Path) -> str | None:
     return name or None
 
 
+def _detect_repo_root(cwd: str | Path) -> str | None:
+    """Top-level directory of the repository containing cwd. None outside git."""
+    if not cwd:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 def repo_name_from_cwd(
     cwd: str | Path, aliases: dict[str, str] | None = None, *, git_only: bool = False,
 ) -> str:
@@ -62,18 +78,10 @@ def repo_name_from_cwd(
     if not name and git_only:
         # A remote is optional. Resolve the root so subdirectories still use
         # the repository name, while ordinary directories have no prefix.
-        if not cwd:
+        root = _detect_repo_root(cwd)
+        if not root:
             return ""
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=2,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return ""
-        if result.returncode or not result.stdout.strip():
-            return ""
-        name = Path(result.stdout.strip()).name
+        name = Path(root).name
     name = name or (Path(cwd).name if cwd else "unknown")
     if aliases and name in aliases:
         return aliases[name]

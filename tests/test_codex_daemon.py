@@ -222,6 +222,7 @@ class CodexDaemonSignalTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="main"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
             ):
                 await daemon._handle_notify_signal(signal)
                 await daemon._handle_notify_signal(signal)
@@ -276,6 +277,7 @@ class CodexDaemonSignalTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="main"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
                 self.assertLogs("codex_matrix.daemon", level="WARNING") as captured,
             ):
                 await daemon._handle_notify_signal(signal)
@@ -326,6 +328,7 @@ class CodexDaemonSignalTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="feature-branch"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
                 self.assertLogs("codex_matrix.daemon", level="WARNING") as captured,
             ):
                 await daemon._handle_notify_signal(signal)
@@ -367,6 +370,7 @@ class CodexDaemonSignalTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="main"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
             ):
                 await daemon._discover_sessions()
                 await self._finish_decorations(daemon)
@@ -398,6 +402,7 @@ class CodexDaemonSignalTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch("codex_matrix.bridge.detect_branch", return_value="main"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
             ):
                 daemon.watched_sessions.add("thread-1")
                 active_title_task = daemon._schedule_active_title_restore("thread-1")
@@ -481,6 +486,7 @@ class CodexDaemonSignalTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch("codex_matrix.bridge.detect_branch", return_value="feature-branch"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
             ):
                 renamed = await bridge.mark_session_active("thread-1")
 
@@ -559,6 +565,7 @@ class CodexDaemonBranchRefreshTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="feature-branch"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
             ):
                 file_task = asyncio.create_task(
                     daemon._on_file_messages(
@@ -611,6 +618,7 @@ class CodexDaemonBranchRefreshTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="feature-branch"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
                 self.assertLogs("codex_matrix.daemon", level="WARNING") as captured,
             ):
                 await daemon._on_file_messages(
@@ -646,6 +654,7 @@ class CodexDaemonBranchRefreshTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="feature-branch"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
                 self.assertLogs("codex_matrix.daemon", level="WARNING") as captured,
             ):
                 await daemon._on_file_messages(
@@ -678,6 +687,7 @@ class CodexDaemonBranchRefreshTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="feature-branch"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
             ):
                 await daemon._on_file_messages(
                     session_file,
@@ -714,6 +724,7 @@ class CodexDaemonBranchRefreshTests(unittest.IsolatedAsyncioTestCase):
                 patch("codex_matrix.daemon.find_session_file", return_value=session_file),
                 patch("codex_matrix.bridge.detect_branch", return_value="feature-branch"),
                 patch("matrix_bridge.room_name._detect_repo_from_origin", return_value=None),
+                patch("matrix_bridge.room_name._detect_repo_root", return_value="/workspace/project"),
             ):
                 file_task = asyncio.create_task(
                     daemon._on_file_messages(
