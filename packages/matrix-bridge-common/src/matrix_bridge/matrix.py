@@ -94,17 +94,26 @@ class MatrixClient:
     # 60s accommodates large media uploads/downloads over the local bridge.
     DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=60)
 
-    def __init__(self, homeserver: str, access_token: str, proxy: str | None = None):
+    def __init__(
+        self,
+        homeserver: str,
+        access_token: str,
+        proxy: str | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
+    ):
         self.homeserver = homeserver.rstrip("/")
         self.access_token = access_token
         # Outbound HTTP proxy applied to every request. None = direct connection.
         self.proxy = proxy or None
+        # Latency-sensitive callers (CLI hooks) pass a tighter budget than the
+        # daemon default, so an unreachable homeserver fails fast.
+        self.timeout = timeout or self.DEFAULT_TIMEOUT
         self.session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
             headers={"Authorization": f"Bearer {self.access_token}"},
-            timeout=self.DEFAULT_TIMEOUT,
+            timeout=self.timeout,
         )
         return self
 
@@ -125,7 +134,7 @@ class MatrixClient:
             await self.session.close()
         self.session = aiohttp.ClientSession(
             headers={"Authorization": f"Bearer {self.access_token}"},
-            timeout=self.DEFAULT_TIMEOUT,
+            timeout=self.timeout,
         )
 
     def _url(self, path: str) -> str:
