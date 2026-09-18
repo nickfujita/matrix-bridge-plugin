@@ -1,11 +1,14 @@
 """Matrix bridge — sends and receives messages via direct HTTP API."""
 
+import asyncio
 import logging
 from pathlib import Path
 
+import aiohttp
 from filelock import FileLock
 
 from matrix_bridge.avatars import get_avatar_mxc
+from matrix_bridge.backoff import HomeserverBreaker
 from matrix_bridge.chunking import split_message
 from matrix_bridge.config import MatrixConfig
 from matrix_bridge.matrix import MatrixClient, RoomUnavailable
@@ -23,20 +26,41 @@ logger = logging.getLogger(__name__)
 
 STATE_DIR = Path.home() / ".ccmatrix"
 
+# Hooks block the CLI while they run, and Claude Code kills UserPromptSubmit
+# and PreToolUse after 15s. Keep every request well inside that so a dead
+# homeserver fails cleanly instead of the hook being killed mid-flight.
+HOOK_TIMEOUT = aiohttp.ClientTimeout(total=10, connect=5)
+
+# Errors that mean "the homeserver is not reachable right now", as opposed to
+# a bug. These open the breaker; anything else propagates as usual.
+TRANSIENT_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError)
+
+
 class MatrixBridge:
     """Manages Matrix connection and message routing."""
 
     def __init__(self, config: MatrixConfig):
         self.config = config
-        self.bot_client = MatrixClient(config.homeserver, config.access_token, proxy=config.proxy_url)
+        self.bot_client = MatrixClient(
+            config.homeserver, config.access_token,
+            proxy=config.proxy_url, timeout=HOOK_TIMEOUT,
+        )
         self.session_map = SessionMap(STATE_DIR / "sessions.json")
+        self.breaker = HomeserverBreaker(STATE_DIR / "homeserver_backoff.json")
 
     async def __aenter__(self):
+        # Raises HomeserverUnreachable while a recent outage is being backed
+        # off; the hook entrypoint turns that into a quiet no-op.
+        self.breaker.check()
         await self.bot_client.__aenter__()
         return self
 
-    async def __aexit__(self, *args):
-        await self.bot_client.__aexit__(*args)
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.bot_client.__aexit__(exc_type, exc, tb)
+        if exc is None:
+            self.breaker.record_success()
+        elif isinstance(exc, TRANSIENT_ERRORS):
+            self.breaker.record_failure()
 
     @serialized_title("claude")
     async def create_room(self, session_id: str, cwd: str) -> str | None:
@@ -168,7 +192,10 @@ class MatrixBridge:
             # If the mapped room turns out to be unreachable (deleted, or created
             # by a previous bot account), recreate it once and resend into the new
             # room. Never advance synced_message_count past messages that were not
-            # actually delivered — doing so drops them permanently.
+            # actually delivered — doing so drops them permanently. The cursor
+            # moves after each delivered message rather than once per batch, so a
+            # hook that dies mid-batch (homeserver outage, hook timeout) resumes
+            # at the first undelivered message instead of resending the batch.
             healed = False
             for i, msg in enumerate(new_messages):
                 is_final = (i == last_assistant_idx)
@@ -205,8 +232,9 @@ class MatrixBridge:
                         await self.bot_client.room_send(
                             entry.room_id, chunk, catchup=quiet, tts=speak,
                         )
+                self.session_map.set_synced_count(session_id, already_synced + i + 1)
 
-            # Update count inside the lock so the next caller sees it
+            # Cover trailing user messages; inside the lock so the next caller sees it
             total = already_synced + len(new_messages)
             self.session_map.set_synced_count(session_id, total)
             return len(new_messages)

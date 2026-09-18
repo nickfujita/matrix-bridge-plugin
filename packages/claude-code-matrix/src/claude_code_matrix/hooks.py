@@ -11,9 +11,10 @@ import asyncio
 import os
 from pathlib import Path
 
+from matrix_bridge.backoff import HomeserverUnreachable
 from matrix_bridge.config import is_suppressed_session, load_config
 from matrix_bridge.session import SessionMap
-from .bridge import MatrixBridge, STATUS_ACTIVE
+from .bridge import MatrixBridge, STATUS_ACTIVE, TRANSIENT_ERRORS
 from .transcript import is_claude_code_payload
 
 
@@ -86,6 +87,11 @@ async def handle_session_start(payload: dict) -> dict:
     if not _is_enabled():
         return {}
 
+    # Start inbound daemon if not running. Before the Matrix work: that part
+    # is skipped while the homeserver is unreachable, and the daemon has its
+    # own reconnect loop so it should be up regardless.
+    _ensure_daemon_running()
+
     # Create Matrix room for this session (or reactivate existing one on resume)
     config = load_config()
     if config:
@@ -96,9 +102,6 @@ async def handle_session_start(payload: dict) -> dict:
                 await bridge.update_room_status(session_id, STATUS_ACTIVE)
             else:
                 await bridge.create_room(session_id, cwd)
-
-    # Start inbound daemon if not running
-    _ensure_daemon_running()
 
     return {}
 
@@ -296,6 +299,28 @@ HANDLERS = {
 }
 
 
+async def run_handler(event: str, handler, payload: dict) -> dict:
+    """Run a hook handler, treating an unreachable homeserver as a no-op.
+
+    A homeserver outage is expected operating condition (the box hosting it
+    gets switched off), not a bug: one line on stderr and exit 0, rather than
+    a 40-line traceback in the terminal and a "Stop hook error". Nothing is
+    lost — the transcript cursor only advances past delivered messages, so the
+    next hook that reaches the homeserver replays the backlog in order.
+    """
+    try:
+        return await handler(payload)
+    except HomeserverUnreachable as exc:
+        print(f"matrix-bridge: {event} skipped, {exc}", file=sys.stderr)
+    except TRANSIENT_ERRORS as exc:
+        print(
+            f"matrix-bridge: {event} could not reach the homeserver "
+            f"({type(exc).__name__}: {exc}); will retry on the next hook",
+            file=sys.stderr,
+        )
+    return {}
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in HANDLERS:
         print(f"Usage: python -m claude_code_matrix.hooks <{'|'.join(HANDLERS)}>", file=sys.stderr)
@@ -304,7 +329,7 @@ def main():
     event = sys.argv[1]
     payload = json.load(sys.stdin)
     handler = HANDLERS[event]
-    result = asyncio.run(handler(payload))
+    result = asyncio.run(run_handler(event, handler, payload))
     json.dump(result, sys.stdout)
 
 

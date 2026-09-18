@@ -10,7 +10,7 @@
     {
       "name": "matrix-bridge-plugin",
       "description": "Self-hosted Matrix bridge for Claude Code \u2014 privacy-first voice and text chat from your phone",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "author": {
         "name": "nickfujita"
       },
