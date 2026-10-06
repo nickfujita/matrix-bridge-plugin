@@ -318,6 +318,9 @@ The repo is a `uv` workspace; each variant is a package under `packages/`.
 `scripts/sync-to-global.sh` (wrapped by `just sync`) mirrors a local clone into
 the Claude Code plugin cache for testing changes live.
 
+For a supervised source installation that must survive plugin cache replacement,
+see [stable runtime installation](docs/runtime-installation.md).
+
 ## License
 
 MIT © [nickfujita](https://github.com/nickfujita)

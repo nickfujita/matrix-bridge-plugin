@@ -226,6 +226,13 @@ def cmd_status(args):
         room = entry.room_id or "no room"
         print(f"  {entry.session_id[:8]}... | pane {entry.tmux_pane} | {project} | {room}")
 
+    deferred_repairs, failed_repairs = session_map.title_repair_backlog()
+    if deferred_repairs:
+        print(
+            f"\nRoom-title repairs deferred: {deferred_repairs} "
+            f"(persistent failure attempts: {failed_repairs})"
+        )
+
     # Check notify hook
     _check_notify_hook()
     return 0
@@ -480,11 +487,12 @@ def _notify_script_updates(passthrough_command: str | None) -> list[tuple[Path, 
     matrix_content = (
         "#!/bin/bash\n"
         "# Codex Matrix bridge notify handler - called by Codex on agent-turn-complete.\n"
-        'echo "$(date) notify called with: ${1:0:200}" >> '
+        '# Log only invocation metadata: notify payloads contain private chat content.\n'
+        'echo "$(date -Is) Codex notify called (payload bytes: ${#1})" >> '
         f"{shlex.quote(str(state_dir / 'codex-notify.log'))}\n"
         + "\n".join(_plugin_root_resolution_lines(project_root)) + "\n"
         'cd "$matrix_root" || exit 1\n'
-        'uv run --quiet python -c "from codex_matrix.notify_handler import handle_notify; handle_notify()" "$@" '
+        'uv run --no-sync --quiet python -m codex_matrix.notify_handler "$@" '
         f"2>> {shlex.quote(str(state_dir / 'codex-notify.log'))}\n"
     )
 
@@ -553,6 +561,7 @@ _PLUGIN_INSTALL_METADATA = ".codex-marketplace-install.json"
 # cache roots and version directories can contain whitespace.
 _PLUGIN_ROOT_RESOLVER = r'''
 import json
+import os
 import re
 import sys
 import tomllib
@@ -646,6 +655,35 @@ def active_revision(config_path):
 
 fallback = Path(sys.argv[1])
 config_path = Path(sys.argv[2])
+# A supervised source install must not switch back to an older cache release
+# when a plugin manager replaces its directories. A pin is an explicit local
+# operator choice, not something inferred from a background process's cwd.
+pin_file = config_path.parent.parent / ".ccmatrix" / "runtime-root"
+pin = os.environ.get("CCMATRIX_RUNTIME_ROOT")
+if not pin and (pin_file.exists() or pin_file.is_symlink()):
+    if not has_no_symlink_components(pin_file):
+        sys.exit("Matrix runtime pin must be a regular file, not a symlink.")
+    try:
+        pin = pin_file.read_text().strip()
+    except OSError:
+        sys.exit("Matrix runtime pin could not be read.")
+    if not pin:
+        sys.exit("Matrix runtime pin is empty.")
+if pin:
+    pinned = Path(pin)
+    if not pinned.is_absolute() or not has_no_symlink_components(pinned):
+        sys.exit("Matrix runtime pin must be an absolute, non-symlink checkout.")
+    marker = regular_contained_file(pinned, MARKER)
+    manifest_path = regular_contained_file(pinned, MANIFEST)
+    try:
+        manifest = json.loads(manifest_path.read_text()) if manifest_path else None
+    except (OSError, ValueError):
+        manifest = None
+    if marker is None or not isinstance(manifest, dict) or manifest.get("name") != NAME:
+        sys.exit("Pinned Matrix runtime is unavailable; refusing a cache downgrade.")
+    print(pinned)
+    sys.exit(0)
+
 candidates = []
 seen = set()
 for priority, raw_versions_dir in enumerate(sys.argv[3:]):
@@ -719,7 +757,7 @@ def _plugin_root_resolution_lines(project_root: Path) -> list[str]:
         str(Path.home() / ".codex" / "config.toml"),
         *(str(versions_dir) for versions_dir in versions_dirs),
     ]
-    resolver_command = "matrix_root=$(python3 -c {} {})".format(
+    resolver_command = "matrix_root=$(python3 -c {} {}) || exit 1".format(
         shlex.quote(_PLUGIN_ROOT_RESOLVER),
         " ".join(shlex.quote(argument) for argument in resolver_args),
     )
