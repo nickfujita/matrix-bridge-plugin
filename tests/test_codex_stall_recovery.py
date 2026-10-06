@@ -352,6 +352,32 @@ class ReversibleRetirementTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(daemon.session_map.get(SUBAGENT_ID).active)
             self.assertEqual(daemon.bridge.message_calls, [])
 
+    async def test_resumed_filename_routes_by_session_metadata_not_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            daemon = _daemon(root)
+            run_id = "019fd999-1111-2222-3333-444455556666"
+            session_file = root / f"rollout-2026-08-05T07-28-33-{INTERACTIVE_ID}_{run_id}.jsonl"
+            session_file.write_text(json.dumps({
+                "type": "session_meta",
+                "payload": {
+                    "session_id": INTERACTIVE_ID,
+                    "id": INTERACTIVE_ID,
+                    "cwd": "/repo",
+                    "originator": "codex-tui",
+                    "source": "cli",
+                    "thread_source": "user",
+                },
+            }) + "\n")
+
+            with patch("codex_matrix.daemon.pane_for_open_file", return_value="%8"):
+                await daemon._on_file_messages(
+                    session_file, [{"role": "assistant", "text": "still here"}]
+                )
+
+            self.assertEqual(daemon.session_map.get(INTERACTIVE_ID).tmux_pane, "%8")
+            self.assertIsNone(daemon.session_map.get(run_id))
+
 
 class TurnErrorMirroringTests(unittest.IsolatedAsyncioTestCase):
     """The change that turns a silent night into a phone buzz."""
@@ -516,6 +542,27 @@ class RoomTitleReconcilerTests(unittest.IsolatedAsyncioTestCase):
             await daemon._reconcile_room_status()
 
             self.assertEqual(daemon.bridge.ended, [])
+
+    async def test_failed_title_repair_is_persistently_backed_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = _daemon(Path(tmp))
+            daemon.session_map.register(INTERACTIVE_ID, "%0", "/repo")
+            daemon.session_map.set_room_id(INTERACTIVE_ID, "!room:test")
+            daemon.session_map.deregister(INTERACTIVE_ID)
+            attempts = []
+
+            async def rejected(session_id: str) -> bool:
+                attempts.append(session_id)
+                return False
+
+            daemon.bridge.mark_session_ended = rejected
+            await daemon._reconcile_room_status()
+            await daemon._reconcile_room_status()
+
+            self.assertEqual(attempts, [INTERACTIVE_ID])
+            entry = daemon.session_map.get(INTERACTIVE_ID)
+            self.assertEqual(entry.room_title_failure_count, 1)
+            self.assertGreater(entry.room_title_retry_at, time.time())
 
 
 class RoomCreationRaceTests(unittest.IsolatedAsyncioTestCase):

@@ -71,6 +71,11 @@ class SessionWatcher:
         self.on_messages = on_messages
         self.observer: Observer | None = None
         self.handler: SessionFileHandler | None = None
+        # The daemon discovers persisted active sessions at boot. Those files
+        # must be seeded at EOF *before* the observer starts: otherwise a
+        # write in the startup window is processed from offset zero and can
+        # replay a multi-megabyte resumed rollout into Matrix.
+        self._prestart_offsets: dict[str, int] = {}
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """Start watching the sessions directory."""
@@ -79,6 +84,7 @@ class SessionWatcher:
             sessions_dir.mkdir(parents=True, exist_ok=True)
 
         self.handler = SessionFileHandler(self.on_messages, loop)
+        self.handler.offsets.update(self._prestart_offsets)
         self.observer = Observer()
         self.observer.schedule(self.handler, str(sessions_dir), recursive=True)
         self.observer.start()
@@ -94,8 +100,15 @@ class SessionWatcher:
         """Start watching a specific session file from current position."""
         if self.handler:
             self.handler.watch_file(path)
+            return
+        try:
+            self._prestart_offsets[str(path)] = path.stat().st_size
+        except OSError:
+            return
 
     def watch_file_from_start(self, path: Path) -> None:
         """Start watching a specific session file from the beginning."""
         if self.handler:
             self.handler.watch_file_from_start(path)
+            return
+        self._prestart_offsets[str(path)] = 0

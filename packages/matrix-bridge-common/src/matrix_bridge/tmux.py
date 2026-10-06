@@ -120,6 +120,15 @@ def pane_for_open_file(target: Path, proc_root: Path = PROC_ROOT) -> str | None:
     pid = pid_holding_file(target, proc_root=proc_root)
     if pid is None:
         return None
+    try:
+        command = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    # A managed Codex app-server holds rollouts for several independent TUIs.
+    # Its launch pane belongs to the first client, not necessarily this thread.
+    # Return no new binding so callers preserve an existing verified mapping.
+    if b"app-server" in command:
+        return None
     return pane_from_process_env(pid, proc_root=proc_root)
 
 

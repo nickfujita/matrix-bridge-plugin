@@ -22,6 +22,8 @@ from matrix_bridge.tmux import pane_current_command, pane_for_open_file, send_ke
 
 from .bridge import CodexBridge
 from .daemon_lifecycle import remove_stale_or_owned_pid_record, write_daemon_identity
+from .inbound_receipts import InboundEventReceipts
+from .sync_cursor import SyncCursor
 from .transcript import (
     extract_latest_assistant_after_last_hidden_marker,
     extract_session_meta,
@@ -39,6 +41,10 @@ STATE_DIR = Path.home() / ".ccmatrix"
 CODEX_ACTIVE_COMMANDS = {"codex", "node"}
 SESSION_CLEANUP_INTERVAL_SECONDS = 30
 UNKNOWN_PANE_STALE_SECONDS = 10 * 60
+ROOM_RECONCILE_RETRY_INITIAL_SECONDS = 30
+ROOM_RECONCILE_RETRY_MAX_SECONDS = 60 * 60
+INBOUND_EVENT_RECEIPTS_FILE = "codex-inbound-event-receipts.json"
+SYNC_CURSOR_FILE = "codex-sync-cursor.json"
 
 # How long a *running* turn may add nothing to its rollout before the room gets
 # a state line. Turn-complete events cannot answer "did the agent stop?" — by
@@ -67,6 +73,10 @@ class CodexDaemon:
         # Separate Matrix client for inbound polling (uses bot token)
         self.poll_client = MatrixClient(config.homeserver, config.access_token, proxy=config.proxy_url)
         self.session_map = SessionMap(STATE_DIR / "codex-sessions.json")
+        self.inbound_event_receipts = InboundEventReceipts(
+            STATE_DIR / INBOUND_EVENT_RECEIPTS_FILE,
+        )
+        self.sync_cursor = SyncCursor(STATE_DIR / SYNC_CURSOR_FILE)
         self.watcher: SessionWatcher | None = None
         self.running = True
         self.next_batch: str | None = None
@@ -123,13 +133,17 @@ class CodexDaemon:
                         try:
                             loop = asyncio.get_event_loop()
                             self.watcher = SessionWatcher(self._on_file_messages)
-                            self.watcher.start(loop)
 
-                            # Discover any existing active sessions
+                            # Seed persisted active files at EOF before the
+                            # observer is allowed to emit changes. A long
+                            # resumed rollout can otherwise be replayed from
+                            # byte zero if it is written during daemon boot.
                             await self._discover_sessions()
 
                             if not self.running:
                                 return
+
+                            self.watcher.start(loop)
 
                             runtime_tasks = {
                                 asyncio.create_task(self._matrix_poll_loop()),
@@ -455,13 +469,32 @@ class CodexDaemon:
             await self._retire_session(thread_id, "unmirrored background thread")
             return
 
-        # Extract metadata if not already registered
+        # A live rollout holder is the only trusted source for a tmux pane:
+        # notify hooks can run under a shared app-server and inherit another
+        # session's environment.
+        verified_pane = pane_for_open_file(session_file) or ""
+        if verified_pane:
+            tmux_pane = verified_pane
+        elif tmux_pane:
+            logger.warning(
+                "Ignoring unverified notify pane %s for Codex session %s",
+                tmux_pane,
+                thread_id[:8],
+            )
+            tmux_pane = ""
+
+        # Extract metadata if not already registered.
         entry = self.session_map.get(thread_id)
         if not entry:
             meta = extract_session_meta(session_file)
             if meta:
                 cwd = meta.get("cwd", cwd)
-            self.session_map.register(thread_id, tmux_pane, cwd)
+            self.session_map.register(thread_id, tmux_pane or "unknown", cwd)
+        elif verified_pane and entry.tmux_pane != verified_pane:
+            # The watcher may have registered this provisionally. Only a
+            # descriptor-backed binding may take ownership of another pane.
+            self.session_map.register(thread_id, verified_pane, entry.cwd or cwd)
+            entry = self.session_map.get(thread_id)
         elif not entry.active:
             # The notify hook fired for a session the reaper had retired. The
             # unmirrored check above has already passed, so this session
@@ -481,13 +514,21 @@ class CodexDaemon:
     async def _on_file_messages(self, path: Path, messages: list[dict]) -> None:
         """Called when new messages are detected in a session JSONL file.
 
-        Identifies the session from the filename and forwards messages to Matrix.
+        Identifies the session from its metadata and forwards messages to Matrix.
         Auto-registers new sessions and creates Matrix rooms on first sight.
         """
-        # Extract thread ID from filename: rollout-<timestamp>-<uuid>.jsonl
-        filename = path.stem  # e.g. "rollout-2026-03-18T12-50-14-019d00ff-..."
-        # The UUID is the last 36 chars of the stem
-        thread_id = filename[-36:] if len(filename) >= 36 else ""
+        # Resumed rollouts append an execution ID after the thread UUID. The
+        # final filename UUID is therefore not reliably the session that owns
+        # this transcript. session_meta is written by Codex itself; retain the
+        # filename fallback for a file still being written before metadata.
+        meta = extract_session_meta(path)
+        # A child rollout's session_id can identify the parent execution.
+        # Its id identifies the actual thread. Retiring an unmirrored child
+        # must never retire the parent that owns the phone conversation.
+        thread_id = (meta or {}).get("id") or (meta or {}).get("session_id") or ""
+        if not thread_id:
+            filename = path.stem
+            thread_id = filename[-36:] if len(filename) >= 36 else ""
 
         if not thread_id:
             return
@@ -507,12 +548,11 @@ class CodexDaemon:
 
         # Auto-register new sessions discovered via file watcher
         if not entry:
-            meta = extract_session_meta(path)
             cwd = meta.get("cwd", "") if meta else ""
-            # The daemon's own environment is not tied to the originating
-            # Codex pane. Register a provisional entry and let the notify hook
-            # backfill the real pane when it fires.
-            self.session_map.register(thread_id, "unknown", cwd)
+            # The daemon's environment is not tied to the originating pane,
+            # but the process holding this rollout is. Bind it when direct
+            # proof is available; otherwise keep a provisional entry.
+            self.session_map.register(thread_id, pane_for_open_file(path) or "unknown", cwd)
             logger.info(f"Auto-registered Codex session {thread_id[:8]} from file watcher")
             entry = self.session_map.get(thread_id)
 
@@ -655,13 +695,16 @@ class CodexDaemon:
         forgets to rename, without that path having to know about this one.
         Failures leave the flag untouched so the next pass retries.
         """
-        repaired = 0
+        attempted = 0
+        now = time.time()
         for entry in self.session_map.all_sessions():
             if not entry.room_id:
                 continue
             if entry.active == (not entry.room_marked_ended):
                 continue
-            if repaired >= ROOM_RECONCILE_MAX_PER_PASS:
+            if entry.room_title_retry_at and entry.room_title_retry_at > now:
+                continue
+            if attempted >= ROOM_RECONCILE_MAX_PER_PASS:
                 return
 
             async with self._title_lock(entry.session_id):
@@ -673,22 +716,38 @@ class CodexDaemon:
                 if current.active == (not current.room_marked_ended):
                     continue
 
-                if current.active:
-                    ok = await self.bridge.mark_session_active(entry.session_id)
-                    label = "active"
-                else:
-                    ok = await self.bridge.mark_session_ended(entry.session_id)
-                    label = "ended"
+                try:
+                    if current.active:
+                        ok = await self.bridge.mark_session_active(entry.session_id)
+                        label = "active"
+                    else:
+                        ok = await self.bridge.mark_session_ended(entry.session_id)
+                        label = "ended"
+                except Exception:
+                    ok = False
+                    label = "active" if current.active else "ended"
+                    logger.warning(
+                        "Room-title reconcile raised for %s; scheduling retry",
+                        entry.session_id[:8],
+                        exc_info=True,
+                    )
 
-            repaired += 1
+            attempted += 1
             if ok:
+                self.session_map.clear_room_title_retry(entry.session_id)
                 logger.info(
                     "Reconciled room title for %s → %s", entry.session_id[:8], label,
                 )
             else:
+                retry_seconds = self.session_map.record_room_title_failure(
+                    entry.session_id,
+                    now=now,
+                    initial_delay=ROOM_RECONCILE_RETRY_INITIAL_SECONDS,
+                    max_delay=ROOM_RECONCILE_RETRY_MAX_SECONDS,
+                )
                 logger.warning(
-                    "Failed to reconcile room title for %s → %s; will retry",
-                    entry.session_id[:8], label,
+                    "Failed to reconcile room title for %s → %s; retry in %ds",
+                    entry.session_id[:8], label, retry_seconds,
                 )
 
     async def _cleanup_ended_sessions(self) -> None:
@@ -791,17 +850,33 @@ class CodexDaemon:
         """Long-poll Matrix /sync for inbound messages."""
         logger.info("Starting Matrix poll loop for inbound messages")
 
-        # Initial sync to skip old messages
-        data = await self.poll_client.sync(timeout=10000)
-        self.next_batch = data.get("next_batch")
+        # A freshly installed daemon intentionally skips old messages. During a
+        # short controlled restart, resume the last completed batch instead so
+        # a phone message arriving in the handoff window is not dropped.
+        self.next_batch = self.sync_cursor.load_fresh()
+        if self.next_batch:
+            logger.info("Resuming a recent Matrix sync cursor")
+        else:
+            data = await self.poll_client.sync(timeout=10000)
+            next_batch = data.get("next_batch")
+            if isinstance(next_batch, str) and next_batch:
+                self.next_batch = next_batch
+                self.sync_cursor.save(next_batch)
 
         while self.running:
             try:
                 data = await self.poll_client.sync(
                     since=self.next_batch, timeout=30000,
                 )
-                self.next_batch = data.get("next_batch")
+                # Commit the cursor only after every event in the batch has
+                # been routed. If shutdown interrupts this work, the next
+                # daemon replays the batch and event receipts suppress inputs
+                # already accepted by tmux.
                 await self._process_sync(data)
+                next_batch = data.get("next_batch")
+                if isinstance(next_batch, str) and next_batch:
+                    self.next_batch = next_batch
+                    self.sync_cursor.save(next_batch)
             except asyncio.TimeoutError:
                 # Sync exceeded its hard timeout — connection is likely
                 # half-open. Drop the aiohttp session so the next sync
@@ -838,18 +913,51 @@ class CodexDaemon:
         # Only text is handled. Voice arrives as ordinary @admin text via the
         # server-side voicehub STT appservice, so m.audio is ignored here.
         if msgtype == "m.text":
-            await self._on_inbound_text(room_id, content.get("body", ""))
+            event_id = event.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                await self._on_inbound_text(
+                    room_id,
+                    content.get("body", ""),
+                    event_id=event_id,
+                )
+            else:
+                # Keep the two-argument call for legacy test fixtures and
+                # nonstandard servers that omit Matrix event IDs.
+                await self._on_inbound_text(room_id, content.get("body", ""))
 
-    async def _on_inbound_text(self, room_id: str, text: str) -> None:
-        """Route a text message from Matrix to the Codex tmux pane."""
+    async def _on_inbound_text(
+        self,
+        room_id: str,
+        text: str,
+        *,
+        event_id: str | None = None,
+    ) -> None:
+        """Route a text message from Matrix to the Codex tmux pane exactly once.
+
+        Matrix /sync may replay an event after a reconnect. A Matrix event ID
+        is the only stable idempotency key available before input reaches tmux;
+        receipt state is written only after tmux accepts the input so a failed
+        injection is still retried.
+        """
         entry = self.session_map.get_by_room(room_id)
         if not entry:
             return
 
-        logger.info(f"Routing to Codex session {entry.session_id[:8]}: {text[:50]}...")
+        # Every normal room event has an ID. Retain the backwards-compatible
+        # no-ID path for malformed test fixtures and nonstandard servers, but
+        # never claim it is deduplicated.
+        if event_id and self.inbound_event_receipts.contains(event_id):
+            logger.info("Skipping already injected Matrix event for Codex session %s", entry.session_id[:8])
+            return
+
+        # Do not log Matrix message bodies: daemon logs are a broad operational
+        # surface and are not a private chat transcript.
+        logger.info("Routing Matrix event to Codex session %s", entry.session_id[:8])
         success = await send_keys(entry.tmux_pane, text)
 
         if success:
+            if event_id:
+                self.inbound_event_receipts.record(event_id)
             await self.poll_client.room_typing(
                 room_id, self.config.user_id, typing=True, timeout=120000,
             )

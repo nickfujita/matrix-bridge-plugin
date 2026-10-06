@@ -7,6 +7,7 @@ from codex_matrix.transcript import (
     extract_latest_assistant_after_last_hidden_marker,
     extract_messages,
     extract_messages_from_offset,
+    find_session_file,
     has_hidden_user_marker,
     is_unmirrored_session,
     is_unmirrored_session_meta,
@@ -40,6 +41,25 @@ def _assistant_line(text: str) -> str:
 
 
 class CodexTranscriptTests(unittest.TestCase):
+    def test_finds_newest_resumed_rollout_for_a_thread(self):
+        thread_id = "019f364b-1a77-7e22-9847-6598b18c74eb"
+        run_id = "019f3650-1a77-7e22-9847-6598b18c74eb"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / f"rollout-old-{thread_id}.jsonl"
+            resumed = root / f"rollout-new-{thread_id}_{run_id}.jsonl"
+            original.write_text("{}\n")
+            resumed.write_text("{}\n")
+
+            # The mtime, rather than traversal order, must decide which file
+            # supplies the live process/pane provenance.
+            import os
+            os.utime(original, (1, 1))
+            os.utime(resumed, (2, 2))
+            from unittest.mock import patch
+            with patch("codex_matrix.transcript.CODEX_SESSIONS_DIR", root):
+                self.assertEqual(find_session_file(thread_id), resumed)
+
     def test_detects_subagent_sessions_as_unmirrored(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "rollout-2026-07-06T00-00-00-019f364b-1a77-7e22-9847-6598b18c74eb.jsonl"

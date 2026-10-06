@@ -164,6 +164,15 @@ class CodexCliNotifyInstallTests(unittest.TestCase):
             self.assertEqual(parsed["agents"]["enabled"], True)
             self.assertNotIn("notify", parsed["agents"])
 
+    def test_notify_script_does_not_log_private_payload_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.object(cli.Path, "home", return_value=home):
+                script = cli._notify_script_updates(None)[0][1].decode()
+
+        self.assertNotIn("${1:0:200}", script)
+        self.assertIn("${#1}", script)
+
     def test_install_notify_hook_replaces_multi_command_array_with_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

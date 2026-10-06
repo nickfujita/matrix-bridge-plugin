@@ -22,7 +22,10 @@ update moves the command and the service with it.
 Without box-bootstrap, provide the same five pieces by hand:
 
 1. A `session-title` command on `PATH` that runs
-   `uv run --no-sync --quiet --project <plugin root> session-title "$@"`.
+   `uv run --no-sync --quiet --project <plugin root> python -m matrix_bridge.session_title "$@"`.
+   Run `uv sync --all-packages --project <plugin root>` before starting it.
+   Calling the Python module avoids recursively finding the outer wrapper on
+   `PATH` when the environment lacks the console entrypoint.
 2. A user service running `session-title watch`, restarted on failure.
 3. tmux formats that name agent windows from `@session_title` and show
    `@session_title | @session_repo` on the right. box-bootstrap's copy is

@@ -299,16 +299,36 @@ def extract_latest_assistant_after_last_hidden_marker(session_path: Path) -> str
 
 
 def find_session_file(thread_id: str) -> Path | None:
-    """Find the JSONL session file for a Codex thread ID.
+    """Find the newest JSONL rollout belonging to a Codex thread.
 
-    Scans ~/.codex/sessions/ for a file whose name ends with the thread ID.
+    A resumed rollout has a filename such as ``...-<thread-id>_<run-id>.jsonl``.
+    Looking only for the older ``...-<thread-id>.jsonl`` form quietly selected
+    an archived segment of a still-live session. That loses its current file
+    descriptor (and its tmux provenance), then lets a completion hook bind a
+    different session to the pane. Accept both forms and prefer the newest.
     """
     if not CODEX_SESSIONS_DIR.exists():
         return None
 
-    # Files are named: rollout-<timestamp>-<thread-id>.jsonl
-    for path in CODEX_SESSIONS_DIR.rglob(f"*-{thread_id}.jsonl"):
-        return path
+    # Do not use a broad substring glob: a UUID can otherwise match an
+    # unrelated filename.
+    candidates = [
+        *CODEX_SESSIONS_DIR.rglob(f"*-{thread_id}.jsonl"),
+        *CODEX_SESSIONS_DIR.rglob(f"*-{thread_id}_*.jsonl"),
+    ]
+    newest: tuple[int, Path] | None = None
+    for path in candidates:
+        try:
+            candidate = (path.stat().st_mtime_ns, path)
+        except OSError:
+            # A rollout may disappear while the session directory is scanned.
+            # Ignore that one candidate rather than losing a stable current
+            # continuation that was also found in the same scan.
+            continue
+        if newest is None or candidate[0] > newest[0]:
+            newest = candidate
+    if newest:
+        return newest[1]
 
     return None
 

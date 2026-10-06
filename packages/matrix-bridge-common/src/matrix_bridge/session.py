@@ -31,6 +31,10 @@ class SessionEntry:
     # session ends. A reconciler compares the two and repairs the title.
     room_marked_ended: bool = False
     last_room_name: str | None = None
+    # Title decoration is cosmetic. Persist retry state so a daemon restart
+    # cannot turn historic M_FORBIDDEN rooms into a new request/log storm.
+    room_title_failure_count: int = 0
+    room_title_retry_at: float = 0.0
 
 
 class SessionMap:
@@ -81,6 +85,8 @@ class SessionMap:
                     if other.get("active") and other.get("tmux_pane") == tmux_pane:
                         other["active"] = False
                         other["ended_at"] = now
+                        other["room_title_failure_count"] = 0
+                        other["room_title_retry_at"] = 0.0
 
             if existing:
                 # Resume — update mutable fields, preserve room_id and history.
@@ -91,6 +97,8 @@ class SessionMap:
                 existing["cwd"] = cwd
                 existing["active"] = True
                 existing["ended_at"] = None
+                existing["room_title_failure_count"] = 0
+                existing["room_title_retry_at"] = 0.0
             else:
                 data[session_id] = asdict(SessionEntry(
                     session_id=session_id,
@@ -106,7 +114,58 @@ class SessionMap:
             if session_id in data:
                 data[session_id]["active"] = False
                 data[session_id]["ended_at"] = time.time()
+                data[session_id]["room_title_failure_count"] = 0
+                data[session_id]["room_title_retry_at"] = 0.0
                 self._save(data)
+
+    def record_room_title_failure(
+        self,
+        session_id: str,
+        *,
+        now: float | None = None,
+        initial_delay: int = 30,
+        max_delay: int = 60 * 60,
+    ) -> int:
+        """Persist an exponential, bounded title-repair retry delay.
+
+        A room from a prior account can reject a state event forever. Title
+        decoration must not turn that into an unbounded API or log workload.
+        """
+        now = time.time() if now is None else now
+        with self.lock:
+            data = self._load()
+            entry = data.get(session_id)
+            if not entry:
+                return initial_delay
+            failures = int(entry.get("room_title_failure_count", 0)) + 1
+            delay = min(initial_delay * (2 ** (failures - 1)), max_delay)
+            entry["room_title_failure_count"] = failures
+            entry["room_title_retry_at"] = now + delay
+            self._save(data)
+            return delay
+
+    def clear_room_title_retry(self, session_id: str) -> None:
+        """Clear persisted retry state after a successful title update."""
+        with self.lock:
+            data = self._load()
+            if session_id in data:
+                data[session_id]["room_title_failure_count"] = 0
+                data[session_id]["room_title_retry_at"] = 0.0
+                self._save(data)
+
+    def title_repair_backlog(self, now: float | None = None) -> tuple[int, int]:
+        """Return ``(deferred, failures)`` for safe status observability."""
+        now = time.time() if now is None else now
+        deferred = 0
+        failures = 0
+        for entry in self._load().values():
+            count = int(entry.get("room_title_failure_count", 0))
+            retry_at = entry.get("room_title_retry_at", 0.0)
+            if count:
+                failures += count
+                if isinstance(retry_at, (int, float)) and retry_at > now:
+                    deferred += 1
+        return deferred, failures
 
     def set_room_id(self, session_id: str, room_id: str | None) -> None:
         """Set (or clear, with None) the room mapped to a session."""

@@ -10,6 +10,62 @@ from codex_matrix import notify_handler
 
 
 class CodexNotifyHandlerTests(unittest.TestCase):
+    def test_missing_rollout_cannot_claim_an_inherited_pane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            enabled_flag = state_dir / "codex-enabled"
+            enabled_flag.touch()
+            session_map = notify_handler.SessionMap(state_dir / "codex-sessions.json")
+            session_map.register("live-thread", "%7", "/workspace/project")
+            payload = {
+                "type": "agent-turn-complete",
+                "thread-id": "ghost-thread",
+                "cwd": "/workspace/project",
+            }
+
+            with (
+                patch.object(notify_handler, "STATE_DIR", state_dir),
+                patch.object(notify_handler, "ENABLED_FLAG", enabled_flag),
+                patch.object(sys, "argv", ["codex-matrix-notify", json.dumps(payload)]),
+                patch.dict(os.environ, {"TMUX_PANE": "%7"}),
+                patch.object(notify_handler, "find_session_file", return_value=None),
+                patch.object(notify_handler, "_ensure_daemon_running") as ensure_daemon,
+            ):
+                notify_handler.handle_notify()
+
+            refreshed = notify_handler.SessionMap(state_dir / "codex-sessions.json")
+            self.assertTrue(refreshed.get("live-thread").active)
+            self.assertIsNone(refreshed.get("ghost-thread"))
+            self.assertFalse((state_dir / "codex-notify-signal").exists())
+            ensure_daemon.assert_not_called()
+
+    def test_rollout_holder_beats_inherited_hook_pane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            enabled_flag = state_dir / "codex-enabled"
+            enabled_flag.touch()
+            session_file = state_dir / "rollout-thread-1.jsonl"
+            payload = {
+                "type": "agent-turn-complete",
+                "thread-id": "thread-1",
+                "cwd": "/workspace/project",
+            }
+
+            with (
+                patch.object(notify_handler, "STATE_DIR", state_dir),
+                patch.object(notify_handler, "ENABLED_FLAG", enabled_flag),
+                patch.object(sys, "argv", ["codex-matrix-notify", json.dumps(payload)]),
+                patch.dict(os.environ, {"TMUX_PANE": "%wrong"}),
+                patch.object(notify_handler, "find_session_file", return_value=session_file),
+                patch.object(notify_handler, "pane_for_open_file", return_value="%right"),
+                patch.object(notify_handler, "is_unmirrored_session_meta", return_value=False),
+                patch.object(notify_handler, "is_unmirrored_session", return_value=False),
+                patch.object(notify_handler, "_ensure_daemon_running"),
+            ):
+                notify_handler.handle_notify()
+
+            entry = notify_handler.SessionMap(state_dir / "codex-sessions.json").get("thread-1")
+            self.assertEqual(entry.tmux_pane, "%right")
     def test_signal_preserves_last_assistant_message(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
@@ -30,6 +86,7 @@ class CodexNotifyHandlerTests(unittest.TestCase):
                 patch.object(sys, "argv", ["codex-matrix-notify", json.dumps(payload)]),
                 patch.dict(os.environ, {"TMUX_PANE": "%7"}),
                 patch.object(notify_handler, "find_session_file", return_value=session_file),
+                patch.object(notify_handler, "pane_for_open_file", return_value="%7"),
                 patch.object(notify_handler, "is_unmirrored_session_meta", return_value=False),
                 patch.object(notify_handler, "is_unmirrored_session", return_value=False),
                 patch.object(notify_handler, "_ensure_daemon_running") as ensure_daemon,

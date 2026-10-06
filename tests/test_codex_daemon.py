@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from codex_matrix.bridge import CodexBridge
 from codex_matrix.daemon import CodexDaemon
-from codex_matrix.watcher import SessionFileHandler
+from codex_matrix.watcher import SessionFileHandler, SessionWatcher
 from matrix_bridge.session import SessionMap
 
 
@@ -49,6 +49,42 @@ class _RecordingSessionFileHandler(SessionFileHandler):
     def watch_file(self, path: Path) -> None:
         super().watch_file(path)
         self.events.append(("watch_file", path))
+
+
+class SessionWatcherStartupTests(unittest.TestCase):
+    def test_prestart_discovery_seeds_existing_rollout_at_eof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "rollout-thread.jsonl"
+            rollout.write_bytes(b"already mirrored\n")
+            calls = []
+
+            class Observer:
+                def schedule(self, *args, **kwargs):
+                    calls.append(("schedule", args, kwargs))
+
+                def start(self):
+                    calls.append(("start",))
+
+                def stop(self):
+                    pass
+
+                def join(self, timeout):
+                    pass
+
+            async def unused_callback(_path, _messages):
+                pass
+
+            watcher = SessionWatcher(unused_callback)
+            watcher.watch_file(rollout)
+            loop = asyncio.new_event_loop()
+            try:
+                with patch("codex_matrix.watcher.Observer", return_value=Observer()):
+                    watcher.start(loop)
+            finally:
+                loop.close()
+
+            self.assertEqual(watcher.handler.offsets[str(rollout)], rollout.stat().st_size)
+            self.assertEqual([call[0] for call in calls], ["schedule", "start"])
 
 
 class _MatrixClientStub:

@@ -54,7 +54,7 @@ def handle_notify():
 
     thread_id = payload.get("thread-id", "")
     cwd = payload.get("cwd", "")
-    tmux_pane = os.environ.get("TMUX_PANE", "")
+    inherited_tmux_pane = os.environ.get("TMUX_PANE", "")
 
     if not thread_id:
         return
@@ -73,6 +73,22 @@ def handle_notify():
         "originator": payload.get("originator") or payload.get("thread-originator"),
     }
     session_file = find_session_file(thread_id)
+
+    # A completion hook is often launched by Codex's long-lived app-server,
+    # not by the session process itself. Its TMUX_PANE is inherited from the
+    # server's launch and can belong to another live session. Never let an
+    # event with no matching rollout mutate the routing map. The file watcher
+    # will see a genuine rollout when it exists and can establish ownership
+    # from its open descriptor.
+    if not session_file:
+        if is_unmirrored_session_meta(meta):
+            session_map.deregister(thread_id)
+        logger.warning(
+            "Ignoring Codex notify for %s: no matching rollout; preserving pane ownership",
+            thread_id[:8],
+        )
+        return
+
     # The opt-in is checked first and separately: the metadata rules are
     # deliberately redundant across payload and file, so a session that asked to
     # be mirrored must clear both of them, not just the file-based one.
@@ -84,23 +100,23 @@ def handle_notify():
         logger.info(f"Ignoring unmirrored Codex session {thread_id[:8]} (cwd: {cwd})")
         return
 
-    # Register session so the daemon knows about it. The notify hook carries
-    # the authoritative tmux pane binding for the live Codex process, so this
-    # call is allowed to refresh an existing session discovered provisionally
-    # by the file watcher.
-    #
-    # When TMUX_PANE is not in this process's environment, fall back to reading
-    # it from the process that holds the rollout open. Without a pane the entry
-    # keeps the file watcher's "unknown" placeholder, which is what feeds a live
-    # session to the staleness reaper — so it is worth one /proc scan to avoid.
-    if not tmux_pane and session_file:
-        tmux_pane = pane_for_open_file(session_file) or ""
-        if tmux_pane:
-            logger.info(f"Resolved pane {tmux_pane} for {thread_id[:8]} from the process table")
+    # The process holding the rollout open is the authoritative source of the
+    # pane binding. The hook subprocess's environment can be inherited from an
+    # app-server serving several threads. When provenance is unavailable, keep
+    # the mapping provisional rather than retiring the inherited pane's owner.
+    tmux_pane = pane_for_open_file(session_file) or ""
+    if tmux_pane:
+        logger.info(f"Resolved pane {tmux_pane} for {thread_id[:8]} from the process table")
+    elif inherited_tmux_pane:
+        logger.warning(
+            "No verified tmux pane for Codex session %s; ignoring inherited pane %s",
+            thread_id[:8],
+            inherited_tmux_pane,
+        )
 
     if not tmux_pane:
         logger.warning(
-            f"No tmux pane for Codex session {thread_id[:8]}; "
+            f"No verified tmux pane for Codex session {thread_id[:8]}; "
             "entry stays provisional and inbound replies cannot be routed"
         )
 
